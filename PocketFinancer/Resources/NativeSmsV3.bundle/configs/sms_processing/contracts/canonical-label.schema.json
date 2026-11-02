@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.canonical-label/1",
+  "title": "Canonical Human SMS Label",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract", "label_id", "source_id", "revision", "status", "decision",
+    "operational_class", "event_state", "financial_family", "payment_rail", "events",
+    "uncertain", "notes", "reviewer_id", "created_at_epoch_ms", "supersedes_revision"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.canonical-label/1"},
+    "label_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["draft", "submitted", "adjudicated", "superseded"]},
+    "decision": {"enum": ["posted", "not_posted", "non_financial", "ambiguous", "multiple_event"]},
+    "operational_class": {"enum": ["posted_candidate", "financial_non_posted", "non_financial", "ambiguous", "invalid_outgoing"]},
+    "event_state": {"enum": ["posted", "not_posted", "no_event", "unknown"]},
+    "financial_family": {"enum": [null, "bank_transfer", "bill_payment", "card_purchase", "cash_deposit", "cash_withdrawal", "fee_charge", "insurance", "interest", "investment", "loan", "merchant_payment", "refund", "salary_income", "upi_transfer", "wallet", "other_financial", "unknown"]},
+    "payment_rail": {"enum": [null, "bank_internal", "card", "cash", "imps", "nach", "neft", "other", "rtgs", "upi", "wallet", "unknown"]},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+    "uncertain": {"type": "boolean"},
+    "notes": {"type": "string"},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+    "supersedes_revision": {"type": ["integer", "null"], "minimum": 1}
+  },
+  "$defs": {
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_char", "end_char", "start_utf8", "end_utf8"],
+      "properties": {
+        "start_char": {"type": "integer", "minimum": 0},
+        "end_char": {"type": "integer", "minimum": 1},
+        "start_utf8": {"type": "integer", "minimum": 0},
+        "end_utf8": {"type": "integer", "minimum": 1}
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amount_span", "currency", "currency_provenance", "direction", "direction_span",
+        "account_state", "account_span", "counterparty_state", "counterparty_span",
+        "financial_family", "payment_rail"
+      ],
+      "properties": {
+        "amount_span": {"$ref": "#/$defs/span"},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+        "currency_provenance": {"enum": ["explicit_code", "explicit_unambiguous_symbol_or_marker", "user_primary_default"]},
+        "direction": {"enum": ["debit", "credit"]},
+        "direction_span": {"$ref": "#/$defs/span"},
+        "account_state": {"enum": ["present", "absent", "unknown"]},
+        "account_span": {"oneOf": [{"$ref": "#/$defs/span"}, {"type": "null"}]},
+        "counterparty_state": {"enum": ["present", "absent", "unknown"]},
+        "counterparty_span": {"oneOf": [{"$ref": "#/$defs/span"}, {"type": "null"}]},
+        "financial_family": {"enum": [null, "bank_transfer", "bill_payment", "card_purchase", "cash_deposit", "cash_withdrawal", "fee_charge", "insurance", "interest", "investment", "loan", "merchant_payment", "refund", "salary_income", "upi_transfer", "wallet", "other_financial", "unknown"]},
+        "payment_rail": {"enum": [null, "bank_internal", "card", "cash", "imps", "nach", "neft", "other", "rtgs", "upi", "wallet", "unknown"]}
+      }
+    }
+  }
+}

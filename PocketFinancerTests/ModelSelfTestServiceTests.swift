@@ -2,179 +2,126 @@ import XCTest
 
 @testable import PocketFinancer
 
+@MainActor
 final class ModelSelfTestServiceTests: XCTestCase {
-    @MainActor
-    func testPassedReportCapturesExactContractInputDraftAndValidatedFields() async throws {
+    func testGroundedExtractorPassesThroughRealShadowCoordinator() async throws {
         let receivedAt = Date(timeIntervalSince1970: 1_785_955_200.125)
-        let draft = ParsedAlertDraft(
-            classification: .transaction,
-            direction: "debit",
-            amountText: "Rs.500.00",
-            merchant: "Demo Store",
-            accountLabel: "XXXXXX0000",
-            occurredAtText: "05-08-2026",
-            currencyCode: "INR"
-        )
-        let parser = VerifyingSelfTestParser(expectedReceivedAt: receivedAt, draft: draft)
 
         let result = await ModelSelfTestService.run(
-            parser: parser,
-            timeout: .seconds(1),
+            extractor: GroundedSelfTestExtractor(),
+            extractorEligibilityOverride: true,
             receivedAt: receivedAt
         )
 
         XCTAssertTrue(result.passed)
         XCTAssertEqual(result.outcome, .passed)
-        XCTAssertEqual(result.parserName, parser.parserName)
-        XCTAssertEqual(result.contractVersion, FoundationModelExtractionContract.contractVersion)
-        XCTAssertEqual(result.profileVersion, FoundationModelExtractionContract.extractionProfileVersion)
-        XCTAssertEqual(result.localeIdentifier, parser.requestMetadata.localeIdentifier)
-        XCTAssertEqual(result.localeWasSupported, true)
-        XCTAssertEqual(result.supportedLanguageIdentifiers, ["en", "hi"])
-        XCTAssertEqual(result.requestDeadline, "1 second")
-        XCTAssertEqual(result.scheduling, FoundationModelExtractionContract.requestSchedulingDescription)
-        XCTAssertEqual(result.guardrails, FoundationModelExtractionContract.guardrailsDescription)
-        XCTAssertEqual(result.exactInstructions, FoundationModelExtractionContract.instructions)
-        XCTAssertEqual(
-            result.exactRequest,
-            FoundationModelExtractionContract.requestPrompt(
-                body: ModelSelfTestService.syntheticBody,
-                receivedAt: receivedAt
-            )
-        )
+        XCTAssertEqual(result.contractVersion, "pocketfinancer.sms-extractor-input/1")
+        XCTAssertEqual(result.generationMode, "DIRECT_NON_THINKING")
+        XCTAssertEqual(result.outputCompletion, "complete")
         XCTAssertEqual(result.syntheticBody, ModelSelfTestService.syntheticBody)
         XCTAssertEqual(result.syntheticSender, ModelSelfTestService.syntheticSender)
         XCTAssertEqual(result.receivedAt, receivedAt)
-        XCTAssertEqual(result.parserDraft, draft)
-        XCTAssertEqual(result.validationOutcome, .passed)
-        XCTAssertEqual(result.validationSafeCode, "validation_passed")
-        XCTAssertEqual(result.validatedDraft?.amountMinorUnits, 50_000)
-        XCTAssertEqual(result.validatedDraft?.currencyCode, "INR")
-        XCTAssertEqual(result.validatedDraft?.direction, .debit)
-        XCTAssertEqual(result.validatedDraft?.merchant, "Demo Store")
-        XCTAssertEqual(result.validatedDraft?.accountLabel, "XXXXXX0000")
+        XCTAssertEqual(result.settlement, "retained_for_review")
         XCTAssertNil(result.failure)
+        XCTAssertNotNil(result.analysisJSON)
+        XCTAssertTrue(result.exactRequest.contains("sms-extractor-input/1"))
+        XCTAssertTrue(result.exactOutput?.contains(#""decision":"posted""#) == true)
         XCTAssertGreaterThanOrEqual(result.completedAt, result.startedAt)
         XCTAssertGreaterThanOrEqual(result.elapsed, 0)
         XCTAssertEqual(result.apiLimitations, ModelSelfTestService.apiLimitations)
         XCTAssertTrue(result.apiLimitations.contains { $0.metric.localizedCaseInsensitiveContains("token") })
-        XCTAssertTrue(result.apiLimitations.contains { $0.metric.localizedCaseInsensitiveContains("context") })
         XCTAssertTrue(result.apiLimitations.contains { $0.metric.localizedCaseInsensitiveContains("reasoning") })
     }
 
-    @MainActor
-    func testEvidenceFailureRetainsExactParserDraftAndSafeCodeInMemory() async {
-        let draft = ParsedAlertDraft(
-            classification: .transaction,
-            direction: "debit",
-            amountText: "Rs.900.00",
-            merchant: "Demo Store",
-            accountLabel: "XXXXXX0000",
-            occurredAtText: "05-08-2026",
-            currencyCode: "INR"
-        )
-
+    func testUnavailableExtractorFailsClosedAndKeepsLedgerEmpty() async {
         let result = await ModelSelfTestService.run(
-            parser: FakeTransactionParser(result: .success(draft)),
-            timeout: .seconds(1),
+            extractor: FailingSelfTestExtractor(),
+            extractorEligibilityOverride: true,
             receivedAt: TestFixtures.receivedAt
         )
 
         XCTAssertFalse(result.passed)
-        XCTAssertEqual(result.parserDraft, draft)
-        XCTAssertEqual(result.validationOutcome, .failed)
-        XCTAssertEqual(result.validationSafeCode, EvidenceValidationIssue.amountNotGrounded.rawValue)
-        XCTAssertNil(result.validatedDraft)
-        XCTAssertEqual(result.failure?.safeCode, EvidenceValidationIssue.amountNotGrounded.rawValue)
-        XCTAssertEqual(result.failure?.isRetryable, false)
-        XCTAssertTrue(result.summary.localizedCaseInsensitiveContains("validation rejected"))
-    }
-
-    @MainActor
-    func testParserFailureReportsSafeMappedErrorAndSkipsValidation() async {
-        let result = await ModelSelfTestService.run(
-            parser: FakeTransactionParser(result: .failure(.assetsUnavailable)),
-            timeout: .seconds(1),
-            receivedAt: TestFixtures.receivedAt
-        )
-
-        XCTAssertFalse(result.passed)
-        XCTAssertNil(result.parserDraft)
-        XCTAssertEqual(result.validationOutcome, .notRun)
-        XCTAssertEqual(result.validationSafeCode, "validation_not_run")
-        XCTAssertNil(result.validatedDraft)
-        XCTAssertEqual(result.failure?.safeCode, TransactionParserError.assetsUnavailable.safeCode)
+        XCTAssertEqual(result.outcome, .failed)
+        XCTAssertEqual(result.settlement, "retained_for_review")
+        XCTAssertEqual(result.outputCompletion, "failed")
+        XCTAssertNil(result.exactOutput)
+        XCTAssertEqual(result.failure?.safeCode, "runtime_unavailable")
         XCTAssertEqual(result.failure?.isRetryable, true)
-        XCTAssertTrue(result.failure?.ownerMessage.localizedCaseInsensitiveContains("assets") == true)
+        XCTAssertTrue(result.summary.localizedCaseInsensitiveContains("did not produce"))
     }
 
-    @MainActor
-    func testUnsupportedLocaleFailureNamesExactCheckedModelLocale() async {
-        let metadata = TransactionParserRequestMetadata(
-            localeIdentifier: "zz_IN",
-            localeWasSupported: false,
-            supportedLanguageIdentifiers: ["en", "hi"]
-        )
+    func testMismatchedEvidenceOutputFailsClosed() async {
         let result = await ModelSelfTestService.run(
-            parser: FakeTransactionParser(
-                requestMetadata: metadata,
-                result: .failure(.unsupportedLanguageOrLocale)
-            ),
-            timeout: .seconds(1),
-            receivedAt: TestFixtures.receivedAt
-        )
-
-        XCTAssertEqual(result.localeIdentifier, "zz_IN")
-        XCTAssertEqual(result.localeWasSupported, false)
-        XCTAssertEqual(result.supportedLanguageIdentifiers, ["en", "hi"])
-        XCTAssertTrue(result.failure?.ownerMessage.contains("zz_IN") == true)
-        XCTAssertTrue(result.failure?.ownerMessage.contains("iPhone and Siri languages") == true)
-        XCTAssertTrue(result.failure?.ownerMessage.contains("region can remain India") == true)
-    }
-
-    @MainActor
-    func testModelNotReadyFailureStatesPublicLimitWithoutClaimingDownloadProgress() async {
-        let result = await ModelSelfTestService.run(
-            parser: FakeTransactionParser(result: .failure(.modelUnavailable(.modelNotReady))),
-            timeout: .seconds(1),
-            receivedAt: TestFixtures.receivedAt
-        )
-
-        XCTAssertEqual(result.failure?.safeCode, "model_modelNotReady")
-        XCTAssertTrue(result.failure?.ownerMessage.contains("modelNotReady") == true)
-        XCTAssertTrue(result.failure?.ownerMessage.contains("does not expose download progress") == true)
-    }
-
-    @MainActor
-    func testTimesOutWithStructuredReport() async {
-        let result = await ModelSelfTestService.run(
-            parser: SlowTransactionParser(),
-            timeout: .milliseconds(10),
+            extractor: MismatchedEvidenceSelfTestExtractor(),
+            extractorEligibilityOverride: true,
             receivedAt: TestFixtures.receivedAt
         )
 
         XCTAssertFalse(result.passed)
-        XCTAssertEqual(result.requestDeadline, "0.010 seconds")
-        XCTAssertEqual(result.failure?.safeCode, TransactionParserError.timedOut.safeCode)
-        XCTAssertEqual(result.validationOutcome, .notRun)
-        XCTAssertTrue(result.message.localizedCaseInsensitiveContains("time limit"))
+        XCTAssertEqual(result.settlement, "retained_for_review")
+        XCTAssertEqual(result.failure?.safeCode, "extractor_evidence_mismatch")
+        XCTAssertEqual(result.failure?.isRetryable, false)
     }
 }
 
-private struct VerifyingSelfTestParser: TransactionParsing {
-    let parserName = "Input-verifying test parser"
-    let requestMetadata = TestFixtures.parserRequestMetadata
-    let expectedReceivedAt: Date
-    let draft: ParsedAlertDraft
-
-    func parse(body: String, sender: String, receivedAt: Date) async throws -> ParsedAlertDraft {
-        guard
-            body == ModelSelfTestService.syntheticBody,
-            sender == ModelSelfTestService.syntheticSender,
-            receivedAt == expectedReceivedAt
-        else {
-            throw TransactionParserError.generationFailed
-        }
-        return draft
+private struct GroundedSelfTestExtractor: FoundationSmsExtracting {
+    func extract(requestJSON: String) async throws -> DirectSelectorResponse {
+        let rawOutput = try strictPostedOutput()
+        return DirectSelectorResponse(
+            rawOutput: rawOutput,
+            runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
+            requestJSON: requestJSON,
+            completion: "complete"
+        )
     }
+}
+
+private struct FailingSelfTestExtractor: FoundationSmsExtracting {
+    func extract(requestJSON _: String) async throws -> DirectSelectorResponse {
+        throw TransactionParserError.modelUnavailable(.modelNotReady)
+    }
+}
+
+private struct MismatchedEvidenceSelfTestExtractor: FoundationSmsExtracting {
+    func extract(requestJSON: String) async throws -> DirectSelectorResponse {
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data((try strictPostedOutput()).utf8))
+                as? [String: Any]
+        )
+        var account = try XCTUnwrap(document["account"] as? [String: Any])
+        account["reference"] = "XX9999"
+        document["account"] = account
+        let data = try JSONSerialization.data(
+            withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        return DirectSelectorResponse(
+            rawOutput: String(decoding: data, as: UTF8.self),
+            runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
+            requestJSON: requestJSON,
+            completion: "complete"
+        )
+    }
+}
+
+private func strictPostedOutput() throws -> String {
+    let source = ModelSelfTestService.syntheticBody
+    func field(_ text: String, value: [String: Any]) throws -> [String: Any] {
+        let range = try XCTUnwrap(source.range(of: text))
+        let start = source[..<range.lowerBound].unicodeScalars.count
+        let end = start + source[range].unicodeScalars.count
+        return value.merging([
+            "evidence": ["start_scalar": start, "end_scalar": end, "text": text]
+        ]) { current, _ in current }
+    }
+    let document: [String: Any] = [
+        "decision": "posted",
+        "amount": try field("INR 500.00", value: ["value": "500.00", "currency": "INR"]),
+        "direction": try field("paid", value: ["value": "debit"]),
+        "account": try field("XXXXXX0000", value: ["reference": "XXXXXX0000"]),
+        "counterparty": try field("Demo Store", value: ["value": "Demo Store"]),
+    ]
+    let data = try JSONSerialization.data(
+        withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes]
+    )
+    return String(decoding: data, as: UTF8.self)
 }

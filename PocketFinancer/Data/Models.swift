@@ -170,8 +170,15 @@ final class Transaction {
     }
 
     var decimalAmount: Decimal {
-        Decimal(amountMinorUnits) / Decimal(100)
+        let scale = CurrencyFormatter.supportedScales[currencyCode.uppercased()] ?? 2
+        let divisor = pow(Decimal(10), scale)
+        return Decimal(amountMinorUnits) / divisor
     }
+}
+
+nonisolated private func pow(_ base: Decimal, _ exponent: Int) -> Decimal {
+    guard exponent > 0 else { return 1 }
+    return (0..<exponent).reduce(Decimal(1)) { partial, _ in partial * base }
 }
 
 @Model

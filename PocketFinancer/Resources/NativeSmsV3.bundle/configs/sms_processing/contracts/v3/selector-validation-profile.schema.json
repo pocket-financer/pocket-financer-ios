@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.selector-validation-profile-schema/3",
+  "title": "Grounded Candidate Selector Validation Profile V3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "selector_output_contract",
+    "generation",
+    "json_policy",
+    "reason_codes"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.selector-validation-profile/3"},
+    "selector_output_contract": {
+      "const": "pocketfinancer.grounded-candidate-selector/1"
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "decoding",
+        "answer_token_limit",
+        "raw_output_utf8_byte_limit",
+        "parser_deadline_ms"
+      ],
+      "properties": {
+        "mode": {"const": "DIRECT_NON_THINKING"},
+        "decoding": {"const": "greedy"},
+        "answer_token_limit": {"const": 512},
+        "raw_output_utf8_byte_limit": {"const": 16384},
+        "parser_deadline_ms": {"const": 0}
+      }
+    },
+    "json_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exactly_one_document",
+        "reject_duplicate_keys",
+        "reject_additional_properties",
+        "reject_non_string_discriminator",
+        "reject_unknown_candidate_ids",
+        "reject_wrong_candidate_kinds",
+        "reject_cross_clause_core_selection",
+        "repair_invalid_output"
+      ],
+      "properties": {
+        "exactly_one_document": {"const": true},
+        "reject_duplicate_keys": {"const": true},
+        "reject_additional_properties": {"const": true},
+        "reject_non_string_discriminator": {"const": true},
+        "reject_unknown_candidate_ids": {"const": true},
+        "reject_wrong_candidate_kinds": {"const": true},
+        "reject_cross_clause_core_selection": {"const": true},
+        "repair_invalid_output": {"const": false}
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

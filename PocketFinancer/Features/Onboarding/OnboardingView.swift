@@ -5,6 +5,7 @@ struct OnboardingView: View {
     let onComplete: () -> Void
 
     @State private var page = 0
+    @State private var primaryCurrency = PrimaryCurrencySettings.currentCode
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,6 +38,23 @@ struct OnboardingView: View {
                 .tag(1)
 
                 OnboardingPage(
+                    symbol: "coloncurrencysign.circle.fill",
+                    title: "Choose your primary currency",
+                    subtitle:
+                        "This is a fallback only when an alert does not name a currency. Explicit source evidence always wins.",
+                    tint: .orange
+                ) {
+                    Picker("Primary currency", selection: $primaryCurrency) {
+                        ForEach(PrimaryCurrencySettings.supportedCodes, id: \.self) { code in
+                            Text(code).tag(code)
+                        }
+                    }
+                    .pickerStyle(.wheel)
+                    .accessibilityIdentifier("primary-currency-picker")
+                }
+                .tag(2)
+
+                OnboardingPage(
                     symbol: "command",
                     title: "Connect with Shortcuts",
                     subtitle:
@@ -50,7 +68,10 @@ struct OnboardingView: View {
                             text: "Use a Message Contains text filter such as Rs. Do not add a Sender condition."
                         )
                         AutomationStep(
-                            number: 3, text: "Add Import Transaction Alert and connect the incoming message body.")
+                            number: 3,
+                            text:
+                                "Add Import Transaction Alert. Set Message Body to the incoming message’s Content property once; do not add a second Shortcut Input variable."
+                        )
                         AutomationStep(number: 4, text: "Choose automatic execution when iOS offers it.")
 
                         ShortcutsLink()
@@ -63,25 +84,26 @@ struct OnboardingView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .tag(2)
+                .tag(3)
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
 
             Button {
-                if page < 2 {
+                if page < 3 {
                     withAnimation { page += 1 }
                 } else {
+                    PrimaryCurrencySettings.confirm(primaryCurrency)
                     onComplete()
                 }
             } label: {
-                Text(page < 2 ? "Continue" : "Start Tracking")
+                Text(page < 3 ? "Continue" : "Start Tracking")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
             }
             .buttonStyle(.glassProminent)
             .padding(.horizontal, 24)
             .padding(.bottom, 20)
-            .accessibilityIdentifier(page < 2 ? "onboarding-continue" : "onboarding-finish")
+            .accessibilityIdentifier(page < 3 ? "onboarding-continue" : "onboarding-finish")
         }
         .background {
             LinearGradient(

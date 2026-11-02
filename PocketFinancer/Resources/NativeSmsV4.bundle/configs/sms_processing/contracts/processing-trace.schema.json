@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.processing-trace/1",
+  "title": "Immutable Local Processing Trace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "operation_id_hash", "config_hash", "stages", "previous_trace_hash"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.processing-trace/1"},
+    "operation_id_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "previous_trace_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "stage", "status", "reason_codes", "detail"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 0},
+          "stage": {"enum": ["analysis", "triage", "selector_decode", "selector_validation", "reconstruction", "persistence_gate", "review"]},
+          "status": {"enum": ["started", "completed", "skipped", "failed", "retained"]},
+          "reason_codes": {"type": "array", "items": {"type": "string"}},
+          "detail": {"type": ["object", "null"]}
+        }
+      }
+    }
+  }
+}

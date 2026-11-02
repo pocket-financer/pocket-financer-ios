@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.processing-result/2",
+  "title": "Host-Reconstructed Native SMS Processing Result V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "recognition_decision",
+    "semantic_result",
+    "automatic_persistence"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.processing-result/2"},
+    "recognition_decision": {"enum": ["none", "abstain", "posted"]},
+    "semantic_result": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/semantic_result"}]
+    },
+    "automatic_persistence": {"$ref": "#/$defs/persistence_decision"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"recognition_decision": {"const": "posted"}}},
+      "then": {"properties": {"semantic_result": {"$ref": "#/$defs/semantic_result"}}},
+      "else": {"properties": {"semantic_result": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_char", "end_char", "start_utf8", "end_utf8", "text"],
+      "properties": {
+        "start_char": {"type": "integer", "minimum": 0},
+        "end_char": {"type": "integer", "minimum": 1},
+        "start_utf8": {"type": "integer", "minimum": 0},
+        "end_utf8": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "semantic_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analysis_id",
+        "candidate_ids",
+        "money",
+        "direction",
+        "account_state",
+        "counterparty_state",
+        "financial_family",
+        "timestamp",
+        "account_resolution",
+        "evidence"
+      ],
+      "properties": {
+        "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+        "candidate_ids": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amount", "direction", "account", "counterparty"],
+          "properties": {
+            "amount": {"type": "string", "pattern": "^amt_[0-9a-f]{12}$"},
+            "direction": {"type": "string", "pattern": "^dir_[0-9a-f]{12}$"},
+            "account": {"type": "string", "pattern": "^acc_[0-9a-f]{12}$"},
+            "counterparty": {"type": "string", "pattern": "^cp_[0-9a-f]{12}$"}
+          }
+        },
+        "money": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minor_units", "currency", "scale", "provenance"],
+          "properties": {
+            "minor_units": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9223372036854775807
+            },
+            "currency": {
+              "enum": ["AED", "AUD", "CAD", "CHF", "EUR", "GBP", "INR", "JPY", "SGD", "USD"]
+            },
+            "scale": {"type": "integer", "minimum": 0, "maximum": 2},
+            "provenance": {
+              "enum": [
+                "explicit_code",
+                "explicit_unambiguous_symbol_or_marker",
+                "user_primary_default"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"currency": {"const": "JPY"}}},
+              "then": {"properties": {"scale": {"const": 0}}},
+              "else": {"properties": {"scale": {"const": 2}}}
+            }
+          ]
+        },
+        "direction": {"enum": ["debit", "credit"]},
+        "account_state": {"enum": ["present", "absent", "unknown"]},
+        "counterparty_state": {"enum": ["present", "absent", "unknown"]},
+        "financial_family": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "bank_transfer",
+            "bill_payment",
+            "card_purchase",
+            "cash_deposit",
+            "cash_withdrawal",
+            "fee_charge",
+            "insurance",
+            "interest",
+            "investment",
+            "loan",
+            "merchant_payment",
+            "refund",
+            "salary_income",
+            "upi_transfer",
+            "wallet",
+            "other_financial",
+            "unknown"
+          ]
+        },
+        "timestamp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["epoch_ms", "provenance"],
+          "properties": {
+            "epoch_ms": {"type": ["integer", "null"], "minimum": 0},
+            "provenance": {
+              "enum": [
+                "source_supplied_transaction_time",
+                "acquisition_supplied_message_time",
+                "user_supplied_time",
+                "admission_time",
+                "user_corrected_time",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "account_resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "match_count",
+            "account_id_hash",
+            "matched_alias_hash",
+            "provenance"
+          ],
+          "properties": {
+            "status": {"enum": ["missing", "unresolved", "ambiguous", "uniquely_resolved"]},
+            "match_count": {"type": "integer", "minimum": 0},
+            "account_id_hash": {
+              "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+            },
+            "matched_alias_hash": {
+              "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+            },
+            "provenance": {"type": ["string", "null"], "minLength": 1}
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amount", "direction", "account", "counterparty"],
+          "properties": {
+            "amount": {"$ref": "#/$defs/evidence"},
+            "direction": {"$ref": "#/$defs/evidence"},
+            "account": {
+              "oneOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]
+            },
+            "counterparty": {
+              "oneOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]
+            }
+          }
+        }
+      }
+    },
+    "persistence_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "primary_reason", "checks"],
+      "properties": {
+        "result": {
+          "enum": [
+            "eligible",
+            "review_required",
+            "not_posted",
+            "multiple_events",
+            "blocked_by_mode",
+            "invalid_operation"
+          ]
+        },
+        "primary_reason": {"type": "string", "minLength": 1},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["check", "passed", "reason_code"],
+            "properties": {
+              "check": {"type": "string", "minLength": 1},
+              "passed": {"type": "boolean"},
+              "reason_code": {"type": ["string", "null"], "minLength": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}

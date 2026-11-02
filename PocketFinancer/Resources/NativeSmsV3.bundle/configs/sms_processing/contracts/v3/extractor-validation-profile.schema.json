@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.extractor-validation-profile-schema/1",
+  "title": "Direct SMS Extractor Validation Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "output_contract",
+    "span_coordinates",
+    "json_language",
+    "money",
+    "account",
+    "counterparty",
+    "runtime"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.extractor-validation-profile/1"},
+    "output_contract": {"const": "pocketfinancer.sms-extractor/1"},
+    "span_coordinates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "base", "end", "exact_text_required"],
+      "properties": {
+        "unit": {"const": "unicode_scalar"},
+        "base": {"const": 0},
+        "end": {"const": "exclusive"},
+        "exact_text_required": {"const": true}
+      }
+    },
+    "json_language": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exactly_one_document",
+        "root_object_required",
+        "duplicate_keys_rejected_at_all_depths",
+        "unknown_properties_rejected",
+        "coercion_allowed",
+        "markdown_allowed",
+        "trailing_content_allowed"
+      ],
+      "properties": {
+        "exactly_one_document": {"const": true},
+        "root_object_required": {"const": true},
+        "duplicate_keys_rejected_at_all_depths": {"const": true},
+        "unknown_properties_rejected": {"const": true},
+        "coercion_allowed": {"const": false},
+        "markdown_allowed": {"const": false},
+        "trailing_content_allowed": {"const": false}
+      }
+    },
+    "money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supported_currency_asset",
+        "declared_value_must_equal_evidence_normalization",
+        "storage",
+        "rounding_allowed"
+      ],
+      "properties": {
+        "supported_currency_asset": {"const": "pocketfinancer.supported-currencies/1"},
+        "declared_value_must_equal_evidence_normalization": {"const": true},
+        "storage": {"const": "signed_64_bit_minor_units"},
+        "rounding_allowed": {"const": false}
+      }
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["must_be_derived_from_span", "normalization_profile"],
+      "properties": {
+        "must_be_derived_from_span": {"const": true},
+        "normalization_profile": {"const": "pocketfinancer.account-resolution-profile/1"}
+      }
+    },
+    "counterparty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nullable", "normalization"],
+      "properties": {
+        "nullable": {"const": true},
+        "normalization": {"const": "NFKC-trim-casefold-collapse-whitespace"}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation_mode",
+        "decoding",
+        "answer_token_limit",
+        "raw_output_utf8_byte_limit",
+        "parser_deadline_ms"
+      ],
+      "properties": {
+        "generation_mode": {"const": "DIRECT_NON_THINKING"},
+        "decoding": {"const": "greedy"},
+        "answer_token_limit": {"const": 512},
+        "raw_output_utf8_byte_limit": {"const": 16384},
+        "parser_deadline_ms": {"const": 0}
+      }
+    }
+  }
+}

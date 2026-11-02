@@ -1,0 +1,58 @@
+{
+  "span_coordinate_system": "zero-based-half-open-unicode-scalars",
+  "cases": [
+    {
+      "id": "unicode_emoji_zero_evidence",
+      "sms_body": "Alert \ud83d\udcb3: INR 1,250.00 debited from a/c XX1234 at Caf\u00e9.",
+      "advisory_evidence": [],
+      "model_output": {
+        "decision": "posted",
+        "amount": {"value": "1250.00", "currency": "INR", "evidence": {"start_scalar": 9, "end_scalar": 21, "text": "INR 1,250.00"}},
+        "direction": {"value": "debit", "evidence": {"start_scalar": 22, "end_scalar": 29, "text": "debited"}},
+        "account": {"reference": "XX1234", "evidence": {"start_scalar": 39, "end_scalar": 45, "text": "XX1234"}},
+        "counterparty": {"value": "Caf\u00e9", "evidence": {"start_scalar": 49, "end_scalar": 53, "text": "Caf\u00e9"}}
+      },
+      "expected": {"decision": "posted", "amount_minor_units": 125000, "amount_currency": "INR", "direction": "debit", "account_reference": "1234", "counterparty": "caf\u00e9"}
+    },
+    {
+      "id": "combining_mark_conflicting_advice",
+      "sms_body": "Cafe\u0301 INR 42.00 credited to account XX4321.",
+      "advisory_evidence": [{"kind": "amount", "source_span": {"start_scalar": 6, "end_scalar": 9, "text": "INR"}, "clause": "wrong hint", "suggested_interpretation": {"value": "999.00"}, "provenance": {"candidate_id": "amt_deadbeef0000", "analyzer_kind": "candidate"}, "analyzer_version": "pocketfinancer.sms-analysis/2"}],
+      "model_output": {
+        "decision": "posted",
+        "amount": {"value": "42.00", "currency": "INR", "evidence": {"start_scalar": 6, "end_scalar": 15, "text": "INR 42.00"}},
+        "direction": {"value": "credit", "evidence": {"start_scalar": 16, "end_scalar": 24, "text": "credited"}},
+        "account": {"reference": "XX4321", "evidence": {"start_scalar": 36, "end_scalar": 42, "text": "XX4321"}},
+        "counterparty": null
+      },
+      "expected": {"decision": "posted", "amount_minor_units": 4200, "amount_currency": "INR", "direction": "credit", "account_reference": "4321", "counterparty": null}
+    },
+    {
+      "id": "sanitized_negative",
+      "sms_body": "Your statement is ready to view in the app.",
+      "advisory_evidence": [],
+      "model_output": {"decision": "none"},
+      "expected": {"decision": "none"}
+    },
+    {
+      "id": "mandatory_account_missing",
+      "sms_body": "INR 75.00 was debited.",
+      "advisory_evidence": [],
+      "model_output": {"decision": "abstain"},
+      "expected": {"decision": "abstain"}
+    },
+    {
+      "id": "adversarial_mismatched_span",
+      "sms_body": "INR 1,250.00 debited from account XX9999.",
+      "advisory_evidence": [],
+      "model_output": {
+        "decision": "posted",
+        "amount": {"value": "1250.00", "currency": "INR", "evidence": {"start_scalar": 0, "end_scalar": 12, "text": "INR 1,250.00"}},
+        "direction": {"value": "debit", "evidence": {"start_scalar": 13, "end_scalar": 20, "text": "debited"}},
+        "account": {"reference": "XX0000", "evidence": {"start_scalar": 34, "end_scalar": 40, "text": "XX0000"}},
+        "counterparty": null
+      },
+      "expected_reason": "extractor_evidence_mismatch"
+    }
+  ]
+}

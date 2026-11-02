@@ -1,17 +1,21 @@
 # Processing transparency
 
-Pocket Financer provides owner-visible local audit without pretending that Apple's private model internals are available. Its V4 schema preserves the boundary between source evidence, deterministic eligibility, observable structured generation, untrusted mapped model data, validation, accepted ledger data, and later human edits.
+Pocket Financer provides owner-visible local audit without pretending that Apple's
+private model internals are available. Its v4 path preserves the boundary between
+source evidence, advisory deterministic analysis, observable structured
+generation, untrusted model data, strict validation/routing, accepted ledger data,
+and later human edits.
 
 ## Distinct records
 
 | Stage | Meaning | V4 behavior |
 | --- | --- | --- |
 | Source evidence | Alert body, optional sender, origin, and receipt time supplied locally | Persisted in `InboxAlert` for eligible and model-only uncertain alerts; erased for deterministic rejection and duplicates |
-| Deterministic filter run | Exact rule states and terminal eligibility decision evaluated before model work | Persisted in `DeterministicFilterRun`, including rules version and any linked extraction-run ID |
+| Deterministic analysis run | Exact advisory rule states evaluated before model work | Persisted in the versioned deterministic-run record, including rules version and any linked extraction-run ID; analyzer output is not the semantic answer |
 | Structured generation snapshots | Cumulative `GeneratedContent.jsonString` values exposed by Apple's response stream before app mapping | Persisted in sequence on `StructuredGenerationSnapshot`; partial and final values remain explicitly labeled |
 | Exact parser draft | `ParsedAlertDraft` fields returned after Apple's declared structured profile is mapped into Pocket Financer's schema | Persisted on the corresponding `ExtractionRun` before evidence validation; an explicit missing draft remains visible when no mapped response was returned |
-| Validation | Per-field grounding of classification, direction, amount, merchant, account, and date | Every stage persists as passed, failed, or not run, together with the run's safe result code and terminal disposition |
-| Accepted transaction snapshot | Evidence-validated values at the moment the attempt writes the ledger | Persisted immutably on that run, including accepted amount/date evidence; absent when the attempt does not write a transaction |
+| Validation | Per-field grounding of classification, direction, amount, account, and counterparty, plus host-owned receipt-time provenance | Every stage persists as passed, failed, or not run, together with the run's safe result code and terminal disposition; the model does not supply transaction time |
+| Accepted transaction snapshot | Evidence-validated values at the moment the active route writes the ledger | Under review-only v4 this follows owner confirmation; persisted immutably with accepted evidence and absent when no transaction is written |
 | Current ledger | The transaction currently used by the product | Stored separately in mutable `Transaction` and may be updated by a later successful retry while it remains unedited |
 | Owner correction | Values intentionally changed after acceptance | Sets `isEdited`; retry never overwrites the owner's edit or changes historical run snapshots |
 
@@ -21,12 +25,19 @@ Pocket Financer provides owner-visible local audit without pretending that Apple
 
 Every eligible ingestion or retry parser invocation appends one protected local `ExtractionRun` linked to its `InboxAlert`. The pipeline saves observable boundaries in order:
 
-1. Before inference: the exact filter run, then run ID, alert ID, attempt index, parser/contract/profile identity, the exact U.S. English model-processing locale identifier checked with `supportsLocale`, start time, exact instructions, and exact request. `Locale.current` remains separate for regional formatting.
+1. Before inference: the exact advisory-analysis record, then run ID, alert ID,
+   attempt index, parser/contract/profile identity, the exact U.S. English
+   model-processing locale identifier checked with `supportsLocale`, start time,
+   exact instructions, and exact request. `Locale.current` remains separate for
+   regional formatting.
 2. During inference: each cumulative raw structured JSON snapshot exposed by Apple, saved before later validation or ledger mutation.
 3. After a mapped response: response time and every `ParsedAlertDraft` field.
-4. After validation: passed/failed/not-run state for classification, direction, amount, merchant, account, and date.
+4. After validation: passed/failed/not-run state for classification, direction,
+   amount, account, and counterparty, plus the host-owned receipt-time provenance.
 5. At termination: completion time, safe result code, and imported/queued/needs-review disposition.
-6. When accepted: immutable transaction ID, amount, currency, direction, merchant, account, occurrence time, review state, and retained amount/date evidence.
+6. When accepted: immutable transaction ID, amount, currency, direction,
+   counterparty, account, receipt-derived occurrence time, review state, and
+   retained field evidence. Neither the model nor Review edits the receipt time.
 
 Parser failures persist a run with no draft, validation marked not performed, and the safe failure/disposition. An interruption can leave an explicitly unfinished run at its latest saved boundary. Retrying appends another attempt instead of rewriting the earlier record.
 
@@ -77,6 +88,11 @@ Apple Foundation Models does not expose the following through the API used by Po
 - numeric confidence, logits, or field-level probabilities.
 
 Pocket Financer shows these as **not exposed by the public iOS 26 interface used by this build**. It does not derive a supposed confidence from validation, infer throughput from elapsed time, use a hard-coded marketing/model name as a build identifier, infer a context size from failures, or display reconstructed text as hidden reasoning. The public `supportedLanguages` identifiers and `supportsLocale` result are shown separately because those values are available.
+
+Real-time transparency therefore means displaying each cumulative structured
+snapshot as Apple exposes it. It does not mean token decoding on iOS. The UI must
+state that decoded token pieces/IDs are unavailable and must never reconstruct
+text and label it as tokens.
 
 ## Sensitive-data handling
 

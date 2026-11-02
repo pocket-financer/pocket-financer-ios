@@ -1,70 +1,110 @@
 # Architecture
 
-## System boundary
+## Authority and system boundary
 
-Pocket Financer cannot read the iOS Messages database. A user creates a personal automation in Shortcuts and chooses the app's `Import Transaction Alert` action. The action only stores or deduplicates the alert and returns promptly; after onboarding, the foreground app drains the durable queue through the bounded local pipeline.
+Pocket Financer cannot read the iOS Messages database. A user-created Shortcuts
+automation passes message content to `Import Transaction Alert`, which writes a
+protected SwiftData inbox record and returns promptly. Foreground processing then
+uses the versioned shared SMS contract owned by the sibling
+`pocket-financer-intelligence` repository.
+
+The local SLM is the central semantic classifier and extractor. Deterministic
+analysis supplies advisory cues and source spans; it is not an answer allowlist.
+The host owns strict parsing, Unicode-scalar grounding, exact money, account
+resolution, duplicates, receipt time, persistence, durable operation ownership,
+review, and recovery.
 
 ```mermaid
 flowchart LR
-    A["User-selected Shortcut input"] --> B["User-created Shortcuts automation"]
-    B --> C["Import Transaction Alert App Intent"]
-    C --> D["SwiftData inbox write; Shortcut returns"]
-    D --> E["Foreground deterministic eligibility filter"]
-    E -->|rejected| F["Erase raw body; retain safe reason"]
-    E -->|eligible| G["Apple Foundation Models parser"]
-    G --> H["Evidence validator"]
-    H -->|grounded| I["Local transaction"]
-    H -->|unavailable or uncertain| J["Pending / needs review"]
+    A["Shortcut message content"] --> B["Protected SwiftData inbox"]
+    B --> C["Advisory deterministic analysis"]
+    C --> D["Apple Foundation Models classification/extraction"]
+    D --> E["Strict parse + Unicode-scalar grounding"]
+    E --> F["Exact money + account + duplicate checks"]
+    F --> G["Versioned routing"]
+    G -->|"current v4 review-only"| H["Review"]
+    G -.->|"planned successor: complete valid"| I["Transactions"]
 ```
 
-Saving precedes classification and inference so App Intent interruption cannot silently lose an alert. Foreground launches drain retryable records serially.
+Saving precedes inference so App Intent interruption cannot silently lose an
+alert. Foreground launches drain retryable records serially.
+
+## Current and planned routing
+
+The native v4 path is implemented in source and is frozen in `review_only` mode.
+Every posted v4 result, including a complete valid uniquely resolved result,
+remains reviewable until owner confirmation.
+
+The planned additive successor contract will send a complete, strictly valid,
+uniquely resolved, non-duplicate posted result directly to Transactions. Only
+incomplete, invalid, ambiguous, abstained, interrupted, incompatible, or failed
+work will enter Review. A valid `none` decision is a separate non-transaction
+outcome. Stored v1-v4 operations keep their original routing.
 
 ## Layers
 
-- `Data`: versioned SwiftData schema, device-only configuration, and file policy.
-- `Domain`: normalized types, deterministic filtering, source identity, amount parsing, and evidence validation.
-- `Services`: orchestration, Foundation Models adapter, pending queue, diagnostics, and erasure.
-- `Intents`: the smallest background-safe Shortcuts boundary.
-- `Features`: native SwiftUI onboarding, home, transactions, and settings.
+- `Data`: versioned SwiftData schema, protected local configuration, migrations,
+  review/feedback state, and file policy.
+- `Domain`: shared-contract types, advisory analysis, strict extractor parser,
+  Unicode-scalar conversion, exact money, accounts, duplicates, and routing.
+- `Services`: orchestration, Foundation Models adapter, operation ownership,
+  retries, diagnostics, erasure, and recovery.
+- `Intents`: the smallest durable background-safe Shortcuts boundary.
+- `Features`: SwiftUI onboarding, Home, Transactions, Review, Settings, and
+  owner-visible processing details.
 
-The Foundation Models parser is behind a protocol. Tests and CI use a deterministic fake and therefore do not require Apple Intelligence.
+Tests inject model adapters and sanitized vectors; they never require or contain
+real financial alerts.
 
-## Processing transparency boundary
+## Review and corrections
 
-The processing record is deliberately not a single mutable blob called “model output.” Its stages have different trust and retention rules:
+Review shows the complete immutable SMS, read-only receipt time, stable reason
+codes, advisory analyzer evidence, and the model proposal. Amount, direction,
+account, and counterparty have accessible field-specific highlights. Exactly one
+native text selection is active at a time.
 
-1. **Source evidence:** `InboxAlert` durably stores the alert body, optional sender, origin, and timestamps before filter or model work. Deterministic rejection and duplicate handling erase sensitive evidence as described in the privacy policy.
-2. **Deterministic eligibility:** V4 persists the exact rule states and decision before any eligible alert reaches the model.
-3. **Observable structured generation:** live ingestion persists each cumulative `GeneratedContent.jsonString` exposed by Apple's response stream. These snapshots are raw structured content available to the app, not token pieces, hidden reasoning, logits, or KV-cache state.
-4. **Exact app-visible parser draft:** Foundation Models produces its declared structured profile and the adapter maps it into `ParsedAlertDraft`. V2 persists those exact post-schema fields before validation; the session transcript is not retained.
-5. **Validation:** `EvidenceValidator` treats the draft as untrusted and records passed, failed, or not-run outcomes for classification, direction, amount, merchant, account, and date. The attempt also stores its safe result code and disposition.
-6. **Accepted saved transaction:** only a grounded validator result can create or update a `Transaction`. The same run stores an immutable snapshot of the accepted amount, currency, direction, merchant, account, date, review state, and retained amount/date evidence.
-7. **Owner correction:** a later edit mutates the current ledger entry and sets `isEdited`; it does not rewrite any prior run's generation snapshots, parser draft, validation stages, or accepted snapshot. An attempt that was already running detects the newer ledger revision and yields to it.
+Confirmation is one atomic local transaction. Owner corrections append
+revision-bound local feedback and never rewrite the historical model result or
+silently become canonical training labels.
 
-Pocket Financer V2 adds `ExtractionRun`, V3 adds cumulative `StructuredGenerationSnapshot` rows, and V4 adds `DeterministicFilterRun` to the versioned SwiftData schema. The production parser checks its explicit U.S. English model-processing locale with `supportsLocale` and exposes the identifiers returned by `supportedLanguages`; `Locale.current` remains separate for India-region formatting. The filter result and run are saved before inference. Each observable generation snapshot is saved as it arrives. The mapped `ParsedAlertDraft` and response time are then saved before validation, followed by validation stages before any ledger mutation. Finally, a safe result code, terminal disposition, completion time, and—when accepted—immutable transaction snapshot are committed. Retries append new runs; they do not rewrite older attempts.
+## Processing transparency
 
-`AlertProcessingDetailView` presents this persistent attempt history as the historical source of truth. Its separately generated current-contract preview is labeled as a preview, and the mutable current ledger section is clearly distinct from each run's immutable accepted snapshot. An incomplete run can therefore expose the last durable boundary after interruption without inventing a terminal result.
+Each attempt keeps source evidence, configuration/release identity, advisory
+analysis, exact request, observable generation snapshots, strict parser result,
+validation, routing, persistence, and later owner correction as distinct facts.
+Retries append attempts rather than rewriting history.
 
-The V1-to-V4 path uses consecutive lightweight migrations: existing alerts, accounts, transactions, extraction runs, and V3 generation snapshots are preserved, while evidence that an older version never captured remains absent rather than reconstructed. All pipeline records participate in file protection, backup exclusion, **Erase All Local Data**, and uninstall. Their sensitive fields must not be emitted to logs, telemetry, crash reports, notifications, CI artifacts, screenshots, or issue reports.
+Apple Foundation Models exposes cumulative structured-generation snapshots through
+the response stream. It does not expose decoded token pieces/IDs, hidden reasoning,
+logits, token counts, numeric confidence, KV-cache state, or an app-readable model
+artifact. The UI shows observable snapshots while generation is active and labels
+token-level information unavailable. It must not reconstruct or fabricate it.
 
-## Store startup and recovery
+For v4 provenance, iOS uses `system_managed_runtime` and
+`model_file_sha256: null`, while recording the observable model identifier,
+runtime, OS, device, prompt, grammar, validation, and release. This is the
+evidence-backed resolution of the incompatible v3 file-hash requirement.
 
-`AppDatabase.openShared()` opens the protected production store through the V1-to-V4 migration plan and reapplies file protection. It is a throwing boundary; production has no automatic deletion/reset path and no in-memory fallback. In-memory containers exist only when explicitly requested by tests.
+## Schema and recovery
 
-Startup failures are reduced to an owner-safe category and domain/code diagnostic: unrecognized store model, store created by a newer version, protected data unavailable, file-protection failure, or general store-open failure. This includes unsupported pre-baseline prototype stores that cannot be identified as V1. `StoreBootstrapView` does not mount `AppRootView` or a model container after such a failure. It shows a blocking **Local store unavailable** screen, leaves the original store and sidecars in place, warns against uninstalling, and offers an explicit retry.
+Consecutive SwiftData migrations preserve existing alerts, accounts, transactions,
+operations, reviews, feedback, and observable generation evidence. Missing
+historical fields remain absent rather than being invented. Unsupported/newer
+stores are preserved and block access; production never deletes them or falls back
+to an empty in-memory store.
 
-The App Intent uses the same throwing store boundary and verifies file protection before ingesting. If either step fails, the ingestion service throws `AlertIngestionError.storeUnavailable`, which the intent maps to the owner-safe `ImportTransactionAlertIntentError.localStoreUnavailable` message stating that the alert was not saved and must be run again after recovery. No alert, transaction, extraction run, or replacement store is created. Shortcut imports are therefore paused rather than diverted into temporary memory or silently discarded into a fresh database.
+Erase All Local Data invalidates active claims before deleting pipeline evidence,
+transactions, accounts, and inbox content. Suspended work cannot repopulate the
+store afterward. Sensitive source, prompts, outputs, spans, and identifiers never
+enter logs, telemetry, CI artifacts, screenshots, notifications, or issue reports.
 
-## Synthetic model diagnostic
+## Operating and verification model
 
-`ModelSelfTestService` runs one rewritten synthetic alert through the same parser contract and evidence validator without creating a transaction or persistent audit record. Its `ModelSelfTestResult` holds the exact synthetic input, one captured receipt time, instructions, request, exact checked model-processing locale, locale-support result, model-reported language identifiers, parser/configuration details, elapsed time, post-schema `ParsedAlertDraft` when returned, validation outcome and validated fields, safe failure details, and the same explicit Apple API limitations. `ModelSelfTestReportView` owns that result in memory for the lifetime of the Settings sheet; dismissing it releases the report.
+Shared contracts, vectors, and evaluators run from the WSL
+`pocket-financer-intelligence` checkout. This repository is built and tested on
+macOS with Xcode. The simulator covers UI/storage/migration behavior but does not prove
+Foundation Models generation. Physical iPhone validation remains mandatory.
 
-The public iOS 26 Foundation Models interface used by this build does not expose hidden reasoning, a stable owner-readable model build/version, per-request token counts or tokens per second, numeric context-window capacity, KV-cache details, or numeric confidence. It does expose `supportedLanguages`, `supportsLocale`, and a categorical context-window-exceeded error. Unavailable numeric values must never be inferred from timing or filled with product-specific guesses.
-
-## Shared Android semantics
-
-The iOS filter mirrors the body-based Android stages: require a currency amount, masked account/card, and completed transaction verb; reject OTP/verification and collect/mandate requests. Sender is optional metadata, never a trigger or eligibility requirement, because real bank and telecom sender formats vary substantially. Sanitized cases live in `PocketFinancerTests/Fixtures/transaction_parity_v1.json` and should be reviewed against the sibling Android repository when either pipeline changes.
-
-Android can use a provider message ID as an authoritative identity. Shortcuts does not currently expose an equivalent stable identifier, so iOS treats the same normalized body delivered within 15 seconds as one delivery, independent of optional sender metadata. That bounded heuristic absorbs overlapping currency automations; an identical alert after the window remains a legitimate transaction.
-
-The repositories remain independent. A monorepo or submodule would couple platform releases and tooling without sharing executable code; sibling checkouts plus parity fixtures give a clearer ownership boundary.
+See [SMS processing next steps](sms-processing-next-steps.md),
+[processing transparency](processing-transparency.md), and
+[device validation](device-validation.md).

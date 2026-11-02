@@ -31,6 +31,45 @@ struct LocalDataService {
         AlertIngestionService.invalidateAllProcessingClaims()
 
         do {
+            for receipt in try context.fetch(FetchDescriptor<SmsTraceImportReceipt>()) {
+                context.delete(receipt)
+            }
+            for alias in try context.fetch(FetchDescriptor<SmsAccountAlias>()) {
+                context.delete(alias)
+            }
+            for revision in try context.fetch(FetchDescriptor<SmsTransactionRevision>()) {
+                context.delete(revision)
+            }
+            for snapshot in try context.fetch(FetchDescriptor<SmsLegacyTransactionSnapshot>()) {
+                context.delete(snapshot)
+            }
+            for feedback in try context.fetch(FetchDescriptor<SmsUserFeedbackEvent>()) {
+                context.delete(feedback)
+            }
+            for review in try context.fetch(FetchDescriptor<SmsReviewCase>()) {
+                context.delete(review)
+            }
+            for decision in try context.fetch(FetchDescriptor<SmsPersistenceDecision>()) {
+                context.delete(decision)
+            }
+            for result in try context.fetch(FetchDescriptor<SmsReconstructedResult>()) {
+                context.delete(result)
+            }
+            for event in try context.fetch(FetchDescriptor<SmsProcessingTraceEvent>()) {
+                context.delete(event)
+            }
+            for attempt in try context.fetch(FetchDescriptor<SmsSelectorAttempt>()) {
+                context.delete(attempt)
+            }
+            for analysis in try context.fetch(FetchDescriptor<SmsProcessingAnalysis>()) {
+                context.delete(analysis)
+            }
+            for operation in try context.fetch(FetchDescriptor<SmsProcessingOperation>()) {
+                context.delete(operation)
+            }
+            for metadata in try context.fetch(FetchDescriptor<SmsSourceMetadataEvent>()) {
+                context.delete(metadata)
+            }
             for filterRun in try context.fetch(FetchDescriptor<DeterministicFilterRun>()) {
                 context.delete(filterRun)
             }

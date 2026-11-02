@@ -26,9 +26,18 @@ record any deliberate override in the task handoff.
 
 - Treat raw financial alerts as sensitive evidence. Persist an accepted alert before model work, keep processing local, and never log its body, sender, account label, or extracted transaction.
 - No CloudKit, telemetry, ads, remote inference, or network dependency without an explicit product decision and privacy review.
-- A model output is untrusted. Amount, date text, merchant, account label, and direction must be grounded in the raw alert before a transaction is saved.
-- Deterministically rejected OTP, verification, promotional, and collect-request bodies must be erased immediately. A model-only rejection is untrusted and must retain evidence for review.
+- The local SLM is the semantic classifier and extractor. Its output is untrusted:
+  amount, direction, account reference, optional counterparty, and their declared
+  spans must be grounded in the unchanged alert before a transaction is saved.
+  Receipt time is host-owned and never supplied or edited by the model.
+- Deterministic analysis supplies advisory cues and candidate spans; it is not a
+  semantic allowlist. Exact duplicates and narrowly versioned credential/privacy
+  dispositions follow their explicit retention policy, while uncertainty retains
+  the source evidence required for review.
 - Ingestion is idempotent and recovery-safe. A crash or unavailable model must leave a durable, retryable inbox record rather than lose evidence.
+- Owner corrections remain revision-bound local label evidence. They require
+  explicit export and adjudication before any approved, source-grounded,
+  split-safe label can improve the SLM or another pipeline component.
 - Keep platform implementations native. Share semantics and sanitized fixtures with Android, not UI or runtime code.
 
 ## Development

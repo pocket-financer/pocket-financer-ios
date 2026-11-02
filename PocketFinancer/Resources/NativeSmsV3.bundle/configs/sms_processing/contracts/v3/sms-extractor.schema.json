@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.sms-extractor/1",
+  "title": "PocketFinancer Direct SMS Extractor Output",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision"],
+      "properties": {"decision": {"const": "none"}}
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision"],
+      "properties": {"decision": {"const": "abstain"}}
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "amount", "direction", "account", "counterparty"],
+      "properties": {
+        "decision": {"const": "posted"},
+        "amount": {"$ref": "#/$defs/amount"},
+        "direction": {"$ref": "#/$defs/direction"},
+        "account": {"$ref": "#/$defs/account"},
+        "counterparty": {
+          "oneOf": [{"$ref": "#/$defs/counterparty"}, {"type": "null"}]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_scalar", "end_scalar", "text"],
+      "properties": {
+        "start_scalar": {"type": "integer", "minimum": 0},
+        "end_scalar": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "amount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "currency", "evidence"],
+      "properties": {
+        "value": {"type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+        "evidence": {"$ref": "#/$defs/source_span"}
+      }
+    },
+    "direction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence"],
+      "properties": {
+        "value": {"enum": ["debit", "credit"]},
+        "evidence": {"$ref": "#/$defs/source_span"}
+      }
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "evidence"],
+      "properties": {
+        "reference": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/source_span"}
+      }
+    },
+    "counterparty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence"],
+      "properties": {
+        "value": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/source_span"}
+      }
+    }
+  }
+}

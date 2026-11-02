@@ -1,0 +1,49 @@
+{
+  "contract": "pocketfinancer.native-golden-selector-validation/1",
+  "fixture_class": "wholly_invented_synthetic",
+  "validation_profile": "pocketfinancer.selector-validation-profile/2",
+  "vectors": [
+    {
+      "id": "valid-none",
+      "raw_output": "{\"decision\":\"none\"}",
+      "expected": "valid",
+      "decision": "none"
+    },
+    {
+      "id": "valid-abstain",
+      "raw_output": "{\"decision\":\"abstain\"}",
+      "expected": "valid",
+      "decision": "abstain"
+    },
+    {
+      "id": "duplicate-decision-key",
+      "raw_output": "{\"decision\":\"none\",\"decision\":\"abstain\"}",
+      "expected": "selector_duplicate_json_key"
+    },
+    {
+      "id": "array-decision",
+      "raw_output": "{\"decision\":[]}",
+      "expected": "selector_decision_type_invalid"
+    },
+    {
+      "id": "object-decision",
+      "raw_output": "{\"decision\":{\"value\":\"posted\"}}",
+      "expected": "selector_decision_type_invalid"
+    },
+    {
+      "id": "missing-decision",
+      "raw_output": "{}",
+      "expected": "selector_decision_type_invalid"
+    },
+    {
+      "id": "leading-prose",
+      "raw_output": "result: {\"decision\":\"none\"}",
+      "expected": "selector_malformed_json"
+    },
+    {
+      "id": "trailing-document",
+      "raw_output": "{\"decision\":\"none\"}{\"decision\":\"abstain\"}",
+      "expected": "selector_malformed_json"
+    }
+  ]
+}

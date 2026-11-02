@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.user-feedback/2",
+  "title": "Append-Only Native User Feedback Event V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "action_id",
+    "operation_id_hash",
+    "review_case_id_hash",
+    "transaction_revision_id",
+    "expected_review_revision",
+    "resulting_review_revision",
+    "action",
+    "actor_class",
+    "actor_id_hash",
+    "field_corrections",
+    "retry_configuration",
+    "canonical_label_id",
+    "canonical_label_revision",
+    "created_at_epoch_ms",
+    "previous_event_hash"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.user-feedback/2"},
+    "action_id": {"$ref": "#/$defs/uuid"},
+    "operation_id_hash": {"$ref": "#/$defs/sha256"},
+    "review_case_id_hash": {"$ref": "#/$defs/sha256"},
+    "transaction_revision_id": {"type": ["string", "null"], "minLength": 1},
+    "expected_review_revision": {"type": "integer", "minimum": 0},
+    "resulting_review_revision": {"type": "integer", "minimum": 1},
+    "action": {
+      "enum": [
+        "confirm",
+        "correct",
+        "reject",
+        "resolve_multiple_events",
+        "save_draft",
+        "retry"
+      ]
+    },
+    "actor_class": {"enum": ["user", "migration", "system"]},
+    "actor_id_hash": {"$ref": "#/$defs/sha256"},
+    "field_corrections": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/field_correction"}
+    },
+    "retry_configuration": {"type": ["string", "null"], "enum": [null, "original", "current"]},
+    "canonical_label_id": {"type": ["string", "null"], "minLength": 1},
+    "canonical_label_revision": {"type": ["integer", "null"], "minimum": 1},
+    "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+    "previous_event_hash": {
+      "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_char", "end_char", "start_utf8", "end_utf8", "text"],
+      "properties": {
+        "start_char": {"type": "integer", "minimum": 0},
+        "end_char": {"type": "integer", "minimum": 1},
+        "start_utf8": {"type": "integer", "minimum": 0},
+        "end_utf8": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "field_correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "classification",
+        "previous_revision_id",
+        "candidate_id",
+        "evidence",
+        "new_value"
+      ],
+      "properties": {
+        "field": {"type": "string", "minLength": 1},
+        "classification": {
+          "enum": [
+            "selected_existing_candidate",
+            "changed_interpretation_among_candidates",
+            "supplied_source_supported_candidate_miss",
+            "supplied_manual_ungrounded_value"
+          ]
+        },
+        "previous_revision_id": {"type": ["string", "null"], "minLength": 1},
+        "candidate_id": {"type": ["string", "null"], "minLength": 1},
+        "evidence": {
+          "oneOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]
+        },
+        "new_value": {}
+      }
+    }
+  }
+}

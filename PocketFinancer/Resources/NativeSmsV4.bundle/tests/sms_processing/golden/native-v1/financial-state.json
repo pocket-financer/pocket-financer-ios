@@ -1,0 +1,77 @@
+{
+  "contract": "pocketfinancer.native-golden-financial-state/1",
+  "fixture_class": "wholly_invented_synthetic",
+  "analysis_contract": "pocketfinancer.sms-analysis/2",
+  "vectors": [
+    {
+      "id": "expected-refund",
+      "message": "A refund of INR 75 is expected within five days for account **1234.",
+      "direction_count": 0,
+      "disposition": "retain_review",
+      "selector_action": "skip",
+      "reason_code": "review_uncertain_financial_state",
+      "states": ["expectation"],
+      "families": ["refund"]
+    },
+    {
+      "id": "future-refund",
+      "message": "INR 75 will be refunded to account **1234 by SYNTH MARKET.",
+      "direction_count": 0,
+      "disposition": "retain_review",
+      "selector_action": "skip",
+      "reason_code": "review_uncertain_financial_state",
+      "states": ["expectation"],
+      "families": ["refund"]
+    },
+    {
+      "id": "authorization-hold",
+      "message": "INR 80 was charged to card **4321 as an authorization hold at SYNTH HOTEL.",
+      "direction_count": 0,
+      "disposition": "retain_review",
+      "selector_action": "skip",
+      "reason_code": "review_uncertain_financial_state",
+      "states": ["authorization"],
+      "families": []
+    },
+    {
+      "id": "pending-financial-before-credential",
+      "message": "INR 90 will be credited to account **1234. 654321 is your OTP for sign in.",
+      "direction_count": 0,
+      "disposition": "retain_review",
+      "selector_action": "skip",
+      "reason_code": "review_uncertain_financial_state",
+      "states": ["pending", "security"],
+      "families": []
+    },
+    {
+      "id": "completed-refund",
+      "message": "INR 75 was refunded to account **1234 by SYNTH MARKET.",
+      "direction_count": 1,
+      "disposition": "invoke",
+      "selector_action": "run_normal",
+      "reason_code": "invoke_grounded_single_event",
+      "states": ["completed"],
+      "families": ["refund"]
+    },
+    {
+      "id": "completed-with-security-clause",
+      "message": "INR 90 was credited to account **1234 from SYNTH FRIEND. No OTP was required.",
+      "direction_count": 1,
+      "disposition": "invoke",
+      "selector_action": "run_normal",
+      "reason_code": "invoke_grounded_single_event",
+      "states": ["completed", "security"],
+      "families": []
+    },
+    {
+      "id": "standalone-credential",
+      "message": "654321 is your OTP to authorize an online transaction of INR 50.",
+      "direction_count": 0,
+      "disposition": "discard",
+      "selector_action": "skip",
+      "reason_code": "discard_standalone_credential_otp",
+      "states": ["request", "security"],
+      "families": []
+    }
+  ]
+}

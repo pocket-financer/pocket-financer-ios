@@ -208,4 +208,88 @@ final class PocketFinancerSchemaMigrationTests: XCTestCase {
             XCTAssertTrue(try context.fetch(FetchDescriptor<DeterministicFilterRun>()).isEmpty)
         }
     }
+
+    @MainActor
+    func testV6ToV7PreservesDurableAttemptAndRecoversExpiredOperation() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory.appending(
+            path: "PocketFinancerMigration-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        let storeURL = directoryURL.appending(path: "PocketFinancer.store")
+        try FileManager.default.createDirectory(
+            at: directoryURL, withIntermediateDirectories: true
+        )
+        let operationID = UUID()
+        let alertID = UUID()
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: PocketFinancerSchemaV6.self)
+            let configuration = ModelConfiguration(
+                "PocketFinancerV6MigrationTest",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: configuration)
+            let context = container.mainContext
+            let alert = InboxAlert(
+                id: alertID,
+                sourceIdentity: "migration-v6-source",
+                contentDigest: "migration-v6-digest",
+                origin: .manual,
+                sourceApplication: "Messages",
+                sender: "SYNTH-BANK",
+                rawBody: TestFixtures.validBody,
+                receivedAt: TestFixtures.receivedAt
+            )
+            let operation = SmsProcessingOperation(
+                id: operationID,
+                sourceAlertID: alertID,
+                trigger: "manual",
+                configurationJSON: #"{"contract":"pocketfinancer.processing-config/2"}"#,
+                configurationHash: String(repeating: "a", count: 64),
+                contractReleaseID: "native-integration-v2",
+                state: .claimed,
+                createdAt: TestFixtures.receivedAt.addingTimeInterval(-600)
+            )
+            operation.ownerToken = UUID()
+            operation.claimExpiresAt = TestFixtures.receivedAt.addingTimeInterval(-300)
+            operation.updatedAt = TestFixtures.receivedAt.addingTimeInterval(-600)
+            let attempt = SmsSelectorAttempt(
+                operationID: operationID,
+                attemptIndex: 0,
+                runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
+                requestJSON: #"{"contract":"pocketfinancer.sms-extractor-input/1"}"#,
+                startedAt: TestFixtures.receivedAt.addingTimeInterval(-500)
+            )
+            attempt.completionRawValue = "interrupted"
+            context.insert(alert)
+            context.insert(operation)
+            context.insert(attempt)
+            try context.save()
+        }
+
+        let migratedDatabase = try AppDatabase(storeURL: storeURL)
+        Self.retainedMigratedStores.append((migratedDatabase, directoryURL))
+        let store = SmsProcessingStore(modelContainer: migratedDatabase.container)
+        let recovered = try await store.recoverExpiredOperations(
+            now: TestFixtures.receivedAt
+        )
+        XCTAssertEqual(recovered.count, 1)
+        let context = migratedDatabase.container.mainContext
+        let targetOperationID = operationID
+        let operations = try context.fetch(
+            FetchDescriptor<SmsProcessingOperation>(
+                predicate: #Predicate { $0.id == targetOperationID }
+            ))
+        XCTAssertEqual(operations.first?.state, .retainedReview)
+        let attempts = try context.fetch(
+            FetchDescriptor<SmsSelectorAttempt>(
+                predicate: #Predicate { $0.operationID == targetOperationID }
+            ))
+        XCTAssertEqual(attempts.first?.completionRawValue, "interrupted")
+        let reviews = try context.fetch(FetchDescriptor<SmsReviewCase>())
+        XCTAssertEqual(reviews.first?.currentOperationID, operationID)
+        XCTAssertEqual(reviews.first?.reasonCodesRawValue, "operation_interrupted")
+    }
 }

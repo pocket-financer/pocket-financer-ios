@@ -1,0 +1,365 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.sms-analysis/2",
+  "title": "Deterministic SMS Analysis V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "analysis_id",
+    "source_fingerprint",
+    "profile_id",
+    "config_hash",
+    "primary_currency",
+    "source_length_chars",
+    "source_length_utf8",
+    "clauses",
+    "candidates",
+    "cues",
+    "reason_codes",
+    "metadata"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.sms-analysis/2"},
+    "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "source_fingerprint": {"$ref": "#/$defs/sha256"},
+    "profile_id": {"type": "string", "minLength": 1},
+    "config_hash": {"$ref": "#/$defs/sha256"},
+    "primary_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "source_length_chars": {"type": "integer", "minimum": 0},
+    "source_length_utf8": {"type": "integer", "minimum": 0},
+    "clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
+    "candidates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/candidate"}
+    },
+    "cues": {"type": "array", "items": {"$ref": "#/$defs/cue"}},
+    "reason_codes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "metadata": {"$ref": "#/$defs/metadata"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_char", "end_char", "start_utf8", "end_utf8", "text"],
+      "properties": {
+        "start_char": {"type": "integer", "minimum": 0},
+        "end_char": {"type": "integer", "minimum": 1},
+        "start_utf8": {"type": "integer", "minimum": 0},
+        "end_utf8": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "clause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clause_id", "evidence"],
+      "properties": {
+        "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "candidate": {
+      "oneOf": [
+        {"$ref": "#/$defs/amount_candidate"},
+        {"$ref": "#/$defs/direction_candidate"},
+        {"$ref": "#/$defs/account_candidate"},
+        {"$ref": "#/$defs/absent_account_candidate"},
+        {"$ref": "#/$defs/counterparty_candidate"},
+        {"$ref": "#/$defs/absent_counterparty_candidate"}
+      ]
+    },
+    "candidate_base": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "kind",
+        "clause_id",
+        "evidence",
+        "value",
+        "context",
+        "explicit_absence"
+      ]
+    },
+    "amount_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "candidate_id": {"type": "string", "pattern": "^amt_[0-9a-f]{12}$"},
+            "kind": {"const": "amount"},
+            "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+            "evidence": {"$ref": "#/$defs/evidence"},
+            "value": {"$ref": "#/$defs/money_value"},
+            "context": {"$ref": "#/$defs/context"},
+            "explicit_absence": {"const": false}
+          }
+        }
+      ]
+    },
+    "direction_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "candidate_id": {"type": "string", "pattern": "^dir_[0-9a-f]{12}$"},
+            "kind": {"const": "direction"},
+            "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+            "evidence": {"$ref": "#/$defs/evidence"},
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["direction"],
+              "properties": {"direction": {"enum": ["debit", "credit"]}}
+            },
+            "context": {"$ref": "#/$defs/context"},
+            "explicit_absence": {"const": false}
+          }
+        }
+      ]
+    },
+    "account_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "candidate_id": {"type": "string", "pattern": "^acc_[0-9a-f]{12}$"},
+            "kind": {"const": "account"},
+            "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+            "evidence": {"$ref": "#/$defs/evidence"},
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["account_type", "identifier"],
+              "properties": {
+                "account_type": {"enum": ["bank_account", "card", "vpa"]},
+                "identifier": {"type": "string", "minLength": 1}
+              }
+            },
+            "context": {"$ref": "#/$defs/context"},
+            "explicit_absence": {"const": false}
+          }
+        }
+      ]
+    },
+    "absent_account_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {"$ref": "#/$defs/absent_candidate"},
+        {"properties": {
+          "candidate_id": {"type": "string", "pattern": "^acc_[0-9a-f]{12}$"},
+          "kind": {"const": "account"}
+        }}
+      ]
+    },
+    "counterparty_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "candidate_id": {"type": "string", "pattern": "^cp_[0-9a-f]{12}$"},
+            "kind": {"const": "counterparty"},
+            "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+            "evidence": {"$ref": "#/$defs/evidence"},
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["surface"],
+              "properties": {"surface": {"type": "string", "minLength": 1}}
+            },
+            "context": {"$ref": "#/$defs/context"},
+            "explicit_absence": {"const": false}
+          }
+        }
+      ]
+    },
+    "absent_counterparty_candidate": {
+      "allOf": [
+        {"$ref": "#/$defs/candidate_base"},
+        {"$ref": "#/$defs/absent_candidate"},
+        {"properties": {
+          "candidate_id": {"type": "string", "pattern": "^cp_[0-9a-f]{12}$"},
+          "kind": {"const": "counterparty"}
+        }}
+      ]
+    },
+    "absent_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "clause_id": {"const": null},
+        "evidence": {"const": null},
+        "value": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": {"state": {"const": "absent"}}
+        },
+        "context": {"$ref": "#/$defs/context"},
+        "explicit_absence": {"const": true}
+      }
+    },
+    "money_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minor_units", "currency", "currency_provenance"],
+      "properties": {
+        "minor_units": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+        "currency": {"enum": ["AED", "AUD", "CAD", "CHF", "EUR", "GBP", "INR", "JPY", "SGD", "USD"]},
+        "currency_provenance": {
+          "enum": [
+            "explicit_code",
+            "explicit_unambiguous_symbol_or_marker",
+            "user_primary_default"
+          ]
+        },
+        "marker": {"type": "string", "minLength": 1}
+      }
+    },
+    "context": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cue_id", "kind", "clause_id", "evidence", "reason_code"],
+      "properties": {
+        "cue_id": {"type": "string", "pattern": "^q_[0-9a-f]{12}$"},
+        "kind": {"type": "string", "minLength": 1},
+        "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "reason_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_valid",
+        "is_outgoing",
+        "normalized_structural_fingerprint",
+        "completed_event_candidate_count",
+        "completed_event_clause_count",
+        "analyzer_behavior_version",
+        "currency_context_hash",
+        "unicode_behavior",
+        "source_timestamp",
+        "clause_annotations"
+      ],
+      "properties": {
+        "input_valid": {"type": "boolean"},
+        "is_outgoing": {"type": ["boolean", "null"]},
+        "normalized_structural_fingerprint": {"$ref": "#/$defs/sha256"},
+        "completed_event_candidate_count": {"type": "integer", "minimum": 0},
+        "completed_event_clause_count": {"type": "integer", "minimum": 0},
+        "analyzer_behavior_version": {"const": "pocketfinancer.structural-sms-analyzer/2"},
+        "currency_context_hash": {"$ref": "#/$defs/sha256"},
+        "unicode_behavior": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["normalization", "whitespace", "unicode_database_version"],
+          "properties": {
+            "normalization": {"const": "per_code_point_nfkc_casefold"},
+            "whitespace": {"const": "collapse_unicode_whitespace"},
+            "unicode_database_version": {"type": "string", "minLength": 1}
+          }
+        },
+        "source_timestamp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["epoch_ms", "provenance"],
+          "properties": {
+            "epoch_ms": {"type": ["integer", "null"], "minimum": 0},
+            "provenance": {
+              "enum": [
+                "source_supplied_transaction_time",
+                "acquisition_supplied_message_time",
+                "user_supplied_time",
+                "admission_time",
+                "user_corrected_time",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "clause_annotations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["clause_id", "states", "financial_families"],
+            "properties": {
+              "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+              "states": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "completed",
+                    "pending",
+                    "failed",
+                    "authorization",
+                    "expectation",
+                    "security",
+                    "due",
+                    "request",
+                    "unknown"
+                  ]
+                }
+              },
+              "financial_families": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["family", "evidence"],
+                  "properties": {
+                    "family": {
+                      "enum": [
+                        "bank_transfer",
+                        "bill_payment",
+                        "card_purchase",
+                        "cash_deposit",
+                        "cash_withdrawal",
+                        "fee_charge",
+                        "insurance",
+                        "interest",
+                        "investment",
+                        "loan",
+                        "merchant_payment",
+                        "refund",
+                        "salary_income",
+                        "upi_transfer",
+                        "wallet",
+                        "other_financial"
+                      ]
+                    },
+                    "evidence": {"$ref": "#/$defs/evidence"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

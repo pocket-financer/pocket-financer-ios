@@ -6,12 +6,22 @@
 [![UI](https://img.shields.io/badge/UI-SwiftUI-0D96F6?style=flat-square&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![Intelligence](https://img.shields.io/badge/AI-Apple_Foundation_Models-34C759?style=flat-square&logo=apple&logoColor=white)](https://developer.apple.com/documentation/foundationmodels)
 
-Pocket Financer is a private, local-first transaction tracker for iPhone. A user-created Shortcuts automation can hand incoming financial alerts to the app, which durably saves them, applies deterministic safety filters, extracts grounded transaction fields with Apple's on-device Foundation Models framework, and stores the resulting ledger with SwiftData.
+Pocket Financer is a private, local-first transaction tracker for iPhone. A
+user-created Shortcuts automation can hand incoming financial alerts to the app,
+which durably saves them, records advisory deterministic evidence, extracts
+grounded transaction fields with Apple's on-device Foundation Models framework,
+and stores review/ledger state with SwiftData.
 
 Financial alerts, prompts, model output, and transactions are not sent to a Pocket Financer server. The app has no analytics SDK, ad SDK, network client, CloudKit transaction sync, or third-party runtime dependency.
 
 > [!IMPORTANT]
 > Automatic Message ingestion is an iOS 27 physical-device experiment until the complete Shortcuts payload and locked-device matrix passes on a real iPhone. Manual local import remains available. Historical SMS inbox access is intentionally out of scope because iOS provides no general SMS database API to apps.
+
+> [!NOTE]
+> The shared v4 direct-extractor integration is present in source but remains
+> `review_only`. Complete valid v4 results still require owner review. Direct
+> routing to Transactions is a planned additive contract change, not current
+> behavior. See [SMS processing next steps](docs/sms-processing-next-steps.md).
 
 ## Current vertical slice
 
@@ -19,10 +29,10 @@ Pocket Financer currently implements the complete path from a matching financial
 
 1. **Capture the alert:** You create a personal Message automation in Shortcuts and pass the message's `Content` to Pocket Financer's `Import Transaction Alert` action. Pocket Financer cannot browse your Messages inbox or import SMS history by itself.
 2. **Save it before doing anything else:** The Shortcut stores the full alert in protected on-device storage and returns immediately; it does not wait for Apple's model. If overlapping `Rs`, `INR`, and `₹` automations deliver the same message within 15 seconds, Pocket Financer keeps one copy.
-3. **Process saved alerts when the app is active:** After onboarding, opening or returning to Pocket Financer starts work on its waiting inbox. Local rules first reject clear OTPs and verification codes, collect or mandate requests, failed transactions, and standalone promotions. Their sensitive message bodies are erased. An alert that merely lacks a required transaction clue is kept for review instead of being discarded.
-4. **Extract transaction details on device:** Only eligible alerts go to Apple Foundation Models. The model proposes the direction, amount, merchant or counterparty, masked account or card reference, and date. The alert is not sent to a Pocket Financer server.
-5. **Check the proposal against the original SMS:** Model output is treated as a suggestion, not trusted data. Pocket Financer checks the transaction wording, requires one unambiguous amount, and verifies the amount, account, and any returned merchant or date text against the source alert. A transaction is written to the ledger only after these checks pass.
-6. **Keep uncertain work visible:** Retryable model failures remain queued. After three unsuccessful automatic attempts, an alert moves to Review Required and can still be retried manually. Unsafe or unsupported model output also remains available for review; a model-only rejection never erases the source evidence. A grounded result that is missing only an optional merchant or date can be saved for owner confirmation.
+3. **Collect advisory evidence:** After onboarding, opening or returning to Pocket Financer starts work on its waiting inbox. Deterministic analysis records local cues and candidate spans, but it is not the semantic classifier or an answer allowlist.
+4. **Extract transaction details on device:** Apple Foundation Models is the central classifier/extractor for the shared path. It returns `none`, `abstain`, or one posted event with exact Unicode-scalar evidence. The alert is not sent to a Pocket Financer server.
+5. **Validate deterministically:** Model output is untrusted. Pocket Financer strictly parses it, grounds every span against the unchanged SMS, normalizes exact minor units, resolves an existing account, assesses duplicates, and preserves receipt time.
+6. **Route by contract version:** Frozen v4 retains every posted result for owner review. A planned successor will send complete valid uniquely resolved non-duplicate results directly to Transactions and reserve Review for incomplete, invalid, ambiguous, abstained, interrupted, incompatible, or failed work.
 7. **Review and correct the result:** Home shows this month's money in, money out, net cash flow, and recent activity. Transactions separates confirmed items from work that is waiting or needs review. You can inspect the original alert and processing history, correct and confirm a transaction, retry a saved alert, or manually import a synthetic test alert.
 8. **See how each attempt was handled:** Protected local history records the rules applied, the request sent to Apple's model, the structured JSON snapshots the app was allowed to observe, the extracted draft, field-by-field validation, timing, and the accepted transaction snapshot. Later edits remain separate from that history. Apple does not expose hidden reasoning, token-level internals, or numeric confidence through this API.
 9. **Keep the system local and recoverable:** The app has no analytics, ads, CloudKit transaction sync, Pocket Financer server, or third-party runtime dependency. Its database is excluded from backups, protected by iOS, and covered in the app switcher. If an existing store cannot be opened safely, Pocket Financer pauses access and preserves it for retry rather than deleting it or showing an empty replacement.
@@ -34,29 +44,38 @@ flowchart LR
     A["Incoming financial SMS"] --> B["User-created Message automation"]
     B --> C["Import Transaction Alert App Intent"]
     C --> D["Durable SwiftData inbox write"]
-    D --> E{"Deterministic body filter"}
-    E -->|"OTP, request, promo, invalid"| F["Erase sensitive evidence; retain safe reason"]
-    E -->|"Eligible"| G["Apple Foundation Models"]
-    G --> H{"Source-evidence validator"}
-    H -->|"Grounded"| I["Local transaction ledger"]
-    H -->|"Unavailable or uncertain"| J["Retry queue or manual review"]
+    D --> E["Advisory deterministic analysis"]
+    E --> G["Apple Foundation Models classifier/extractor"]
+    G --> H["Strict parse + scalar/money/account/duplicate checks"]
+    H --> I["Versioned routing"]
+    I -->|"current v4"| J["Review"]
+    I -.->|"planned complete-valid successor route"| K["Transactions"]
 ```
 
-The model is never trusted as a database writer. Amount, direction, account, merchant, and any parsed date must be grounded in the original alert before a transaction is accepted.
+The model is never trusted as a database writer. The host owns grounding,
+normalization, account resolution, persistence, and recovery.
 
 ## Processing transparency
 
 Pocket Financer's transparency contract distinguishes seven concepts:
 
 1. **Source evidence** is the locally retained alert body and optional sender metadata supplied by Shortcuts.
-2. **Deterministic eligibility** records why the body can or cannot proceed to the model.
+2. **Deterministic analysis** records advisory cues and any separately versioned
+   privacy disposition; it is not the semantic answer.
 3. **Observable generation** is the cumulative structured JSON exposed while Apple generates.
 4. **Parser draft** is the mapped structured response produced by the system model before validation.
 5. **Validation** checks every draft field against the source evidence and records a privacy-safe result code when the draft cannot be accepted.
-6. **Accepted transaction** contains only evidence-validated values written to the ledger.
+6. **Accepted transaction** contains only evidence-validated values written
+   atomically after the active route permits it; in v4 that requires owner
+   confirmation because rollout is review-only.
 7. **Owner correction** is an explicit later edit and must never be presented as the original model response.
 
-The V4 SwiftData schema records each deterministic filter evaluation and creates one protected `ExtractionRun` for every live-ingestion or retry model attempt. It durably captures the exact instructions and request used for that attempt, contract/profile identity, timing, cumulative `GeneratedContent.jsonString` snapshots exposed while Apple generates, the exact app-visible `ParsedAlertDraft` returned after guided schema mapping, classification/direction/amount/merchant/account/date validation-stage outcomes, a safe result code, terminal disposition, and an immutable accepted-transaction snapshot when validation succeeds. Failed or interrupted attempts remain visible rather than being overwritten by a retry.
+The V4 SwiftData schema records the deterministic advisory analysis and creates
+one protected attempt record for every live-ingestion or retry model attempt. It
+captures the request, contract/profile identity, timing, observable cumulative
+structured snapshots, strict parser result, validation stages, route, disposition,
+and immutable accepted snapshot after confirmation. Failed or interrupted attempts
+remain visible rather than being overwritten by a retry.
 
 The live-ingestion adapter persists every cumulative raw structured JSON snapshot exposed by Apple's response stream, including the final raw response when it differs from the last streamed snapshot. It does not persist the session transcript, and Apple's iOS 26 API does not expose hidden reasoning, decoded token pieces/IDs, logits, or KV-cache internals. The processing screen shows these snapshots separately from the mapped draft and mutable current ledger transaction. Later owner edits do not rewrite historical generation, validation, or accepted snapshots, and an in-flight retry yields to any owner change made while it was running.
 
@@ -133,7 +152,7 @@ The app distinguishes model assets that are unavailable, unsupported language/lo
 
 Start with one `Message Contains debited` automation as a proof, then replace it with three sender-free currency automations for `Rs`, `INR`, and `₹`. Multiple Message conditions are combined as AND, not OR, so the three currency markers need separate automations.
 
-The exact iOS 27 editor flow, input-variable mapping, automatic execution setting, and test procedure are documented in [Shortcuts setup](docs/shortcuts-setup.md). The final mapping is:
+The exact iOS 27 editor flow, input-variable mapping, automatic execution setting, and test procedure are documented in [Shortcuts setup](docs/shortcuts-setup.md). The resulting mapping is:
 
 ```text
 When I receive a Message where Message Contains Rs
@@ -185,10 +204,16 @@ The native Android companion is [`pocket-financer-android`](https://github.com/M
 ```text
 Projects/
   pocket-financer-android/
+  pocket-financer-intelligence/
   pocket-financer-ios/
 ```
 
-The products share reviewed transaction semantics and freshly rewritten synthetic fixtures, not UI code, runtime code, raw SMS exports, or release history. Do not use a submodule or copy Android implementation into this repository.
+The products share their canonical architecture, frozen contracts, sanitized
+vectors, and evaluators through the sibling
+[`pocket-financer-intelligence`](https://github.com/pocket-financer/pocket-financer-intelligence)
+repository. They do not share UI/runtime code, raw SMS exports, private databases, or release
+history. Do not use a submodule or copy Android implementation into this
+repository.
 
 ## Development and releases
 
@@ -199,7 +224,7 @@ Release Please owns version and changelog updates. A merge to `main` may prepare
 ## Roadmap
 
 - [x] Native SwiftUI/SwiftData prototype and local privacy boundary.
-- [x] Durable App Intent ingestion and sender-independent deterministic filter.
+- [x] Durable App Intent ingestion and sender-independent deterministic evidence.
 - [x] Grounded Foundation Models extraction, diagnostics, retry, and synthetic test.
 - [x] Owner-visible V4 pipeline history with exact filter decisions, cumulative structured-generation JSON, request/draft, per-field validation, immutable accepted snapshot, owner-edit separation, and explicit Apple API limits.
 - [x] Detailed in-memory synthetic model report with exact synthetic request/draft, validation, safe failure, timing, and API limits.
@@ -207,7 +232,9 @@ Release Please owns version and changelog updates. A merge to `main` may prepare
 - [x] CI, UI smoke tests, draft release automation, and repository standards.
 - [ ] Pass the physical iPhone 16 Foundation Models synthetic test on the current iOS 27 build.
 - [ ] Prove `Shortcut Input → Content` and automatic execution while unlocked and locked.
-- [ ] Evaluate deterministic candidate extraction plus model-selected candidate IDs against sanitized fixtures.
+- [ ] Implement and verify the additive exception-only-review routing contract:
+  complete valid results to Transactions; only exception outcomes to Review.
+- [ ] Execute the shared v4/successor parity evaluators on the Mac/Xcode lane.
 - [ ] Refine visual identity, App Icon, accessibility, localization, charts, budgets, and insights.
 - [ ] Complete App Store privacy, review, TestFlight, and distribution preparation.
 

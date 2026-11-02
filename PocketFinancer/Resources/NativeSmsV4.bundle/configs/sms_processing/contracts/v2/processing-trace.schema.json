@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.processing-trace/2",
+  "title": "Append-Only Native SMS Processing Trace V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "operation_id_hash",
+    "config_hash",
+    "owner_generation",
+    "events",
+    "previous_trace_hash"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.processing-trace/2"},
+    "operation_id_hash": {"$ref": "#/$defs/sha256"},
+    "config_hash": {"$ref": "#/$defs/sha256"},
+    "owner_generation": {"type": "integer", "minimum": 0},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+    "previous_trace_hash": {
+      "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "event_id",
+        "occurred_at_epoch_ms",
+        "stage",
+        "status",
+        "reason_codes",
+        "detail",
+        "previous_event_hash"
+      ],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 0},
+        "event_id": {"$ref": "#/$defs/uuid"},
+        "occurred_at_epoch_ms": {"type": "integer", "minimum": 0},
+        "stage": {
+          "enum": [
+            "admission",
+            "configuration",
+            "claim",
+            "analysis",
+            "triage",
+            "selector_execution",
+            "selector_validation",
+            "reconstruction",
+            "account_resolution",
+            "persistence_gate",
+            "settlement",
+            "review",
+            "recovery",
+            "erase"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "skipped",
+            "failed",
+            "interrupted",
+            "retained"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "detail": {"type": ["object", "null"]},
+        "previous_event_hash": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        }
+      }
+    }
+  }
+}

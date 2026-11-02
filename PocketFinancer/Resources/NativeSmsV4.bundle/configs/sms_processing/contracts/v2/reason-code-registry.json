@@ -1,0 +1,117 @@
+{
+  "contract": "pocketfinancer.reason-code-registry/1",
+  "unknown_safety_code_policy": "retain_review",
+  "namespaces": [
+    {
+      "namespace": "analysis",
+      "stage": "analysis",
+      "codes": [
+        {"code": "invalid_input", "meaning": "The admitted source cannot be analyzed as a nonempty message.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard"]},
+        {"code": "reliable_outgoing_metadata", "meaning": "Authoritative acquisition metadata identifies an outgoing message.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard"]},
+        {"code": "non_posted_failure", "meaning": "Source evidence states that a movement failed or was declined.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["discard", "retain_review"]},
+        {"code": "negated_movement", "meaning": "Source evidence explicitly negates a financial movement.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["discard", "retain_review"]},
+        {"code": "pending_event", "meaning": "Source evidence describes a pending or future movement.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "amount_due", "meaning": "Source evidence describes an amount due rather than a completed movement.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["discard", "retain_review"]},
+        {"code": "request_or_authorization", "meaning": "Source evidence requests approval or authorization.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["discard", "retain_review"]},
+        {"code": "expected_refund_not_posted", "meaning": "A refund or reversal is expected, anticipated, promised, or future.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review", "not_posted"]},
+        {"code": "authorization_or_hold_not_posted", "meaning": "An amount is merely authorized, preauthorized, or held.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review", "not_posted"]},
+        {"code": "credential_otp", "meaning": "The source contains credential or one-time-password evidence.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["discard", "retain_review", "invoke"]},
+        {"code": "balance_information", "meaning": "The source contains balance information.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "discard", "invoke"]},
+        {"code": "promotion", "meaning": "The source contains promotional language.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "discard", "retain_review"]},
+        {"code": "administrative", "meaning": "The source contains administrative account language.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "discard", "retain_review"]},
+        {"code": "ambiguous_currency_marker", "meaning": "A globally ambiguous currency marker cannot be resolved safely.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "unsupported_currency_code", "meaning": "The source names a valid but unsupported ISO currency.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "conflicting_currencies", "meaning": "The analysis contains more than one normalized currency.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "amount_candidate_present", "meaning": "At least one exact source-backed amount candidate exists.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]},
+        {"code": "completed_direction_candidate_present", "meaning": "At least one completed source-backed direction candidate exists.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]},
+        {"code": "rail_upi", "meaning": "The source contains UPI rail evidence.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]},
+        {"code": "rail_imps", "meaning": "The source contains IMPS rail evidence.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]},
+        {"code": "rail_neft", "meaning": "The source contains NEFT rail evidence.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]},
+        {"code": "rail_rtgs", "meaning": "The source contains RTGS rail evidence.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]},
+        {"code": "rail_nach", "meaning": "The source contains NACH rail evidence.", "severity": "info", "safety_relevant": false, "allowed_outcomes": ["observe", "invoke", "retain_review"]}
+      ]
+    },
+    {
+      "namespace": "triage",
+      "stage": "triage",
+      "codes": [
+        {"code": "discard_invalid_input", "meaning": "Invalid input is terminally discarded after admission policy permits erasure.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard"]},
+        {"code": "discard_reliable_outgoing", "meaning": "Authoritatively outgoing evidence is terminally discarded.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard"]},
+        {"code": "discard_standalone_credential_otp", "meaning": "A high-confidence standalone credential message is terminally discarded.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard"]},
+        {"code": "discard_unapproved_request", "meaning": "An unapproved payment or collection request is not posted.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard", "not_posted"]},
+        {"code": "discard_explicit_non_posted_movement", "meaning": "A deterministically failed or negated standalone movement is not posted.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard", "not_posted"]},
+        {"code": "discard_unambiguous_standalone_non_event", "meaning": "The source is an unambiguous standalone non-event.", "severity": "terminal", "safety_relevant": true, "allowed_outcomes": ["discard"]},
+        {"code": "review_no_completed_event_candidate", "meaning": "No completed direction candidate exists and evidence is not terminal.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "review_uncertain_financial_state", "meaning": "Financial uncertainty takes precedence over unrelated credential discard.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review", "not_posted"]},
+        {"code": "review_multiple_completed_event_candidates", "meaning": "Several completed movement candidates require explicit resolution.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review", "multiple_events"]},
+        {"code": "review_missing_core_candidate", "meaning": "Required amount or direction coverage is missing.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "review_conflicting_or_ambiguous_context", "meaning": "Conflicting state, clause, or currency evidence requires review.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "invoke_grounded_single_event", "meaning": "One grounded completed event is eligible for normal selection.", "severity": "info", "safety_relevant": true, "allowed_outcomes": ["invoke"]}
+      ]
+    },
+    {
+      "namespace": "selector",
+      "stage": "selector_validation",
+      "codes": [
+        {"code": "selector_malformed_json", "meaning": "Selector output is not exactly one valid JSON document.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_duplicate_json_key", "meaning": "Selector output repeats a JSON object key.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_output_not_object", "meaning": "Selector output is not a JSON object.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_decision_type_invalid", "meaning": "The decision discriminator is missing or is not a string.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_unknown_decision", "meaning": "The decision discriminator is unsupported.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_non_posted_extra_fields", "meaning": "A none or abstain response contains undeclared fields.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_posted_field_set_invalid", "meaning": "A posted response does not contain exactly the required fields.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_candidate_id_invalid", "meaning": "A selected candidate identifier has an invalid type or empty value.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_candidate_ids_ambiguous", "meaning": "The analysis contains duplicate candidate identifiers.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["invalid_operation"]},
+        {"code": "selector_unknown_or_cross_message_candidate", "meaning": "A selected identifier is not bound to the current analysis.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review", "invalid_operation"]},
+        {"code": "selector_candidate_kind_mismatch", "meaning": "A candidate was selected for the wrong semantic field.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_required_candidate_absent", "meaning": "Amount or direction selected an explicit-absence candidate.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_required_evidence_missing", "meaning": "Required amount or direction evidence is missing.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_cross_clause_core_selection", "meaning": "Selected amount and direction belong to different clauses.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "selector_candidate_metadata_invalid", "meaning": "Selected host candidate metadata violates its declared type.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review", "invalid_operation"]},
+        {"code": "selector_absent_candidate_metadata_invalid", "meaning": "An explicit-absence candidate contains fabricated source metadata.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["invalid_operation"]},
+        {"code": "selector_optional_evidence_missing", "meaning": "A present optional candidate lacks source evidence.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review", "invalid_operation"]},
+        {"code": "selector_none", "meaning": "The selector found no posted event among the candidates.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["not_posted", "retain_review"]},
+        {"code": "selector_abstain", "meaning": "The selector declined to choose grounded candidates.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]}
+      ]
+    },
+    {
+      "namespace": "persistence",
+      "stage": "persistence_gate",
+      "codes": [
+        {"code": "persistence_unknown_analysis_contract", "meaning": "The analysis contract is unknown to the automatic gate.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["invalid_operation"]},
+        {"code": "persistence_configuration_hash_mismatch", "meaning": "Stored configuration and processing evidence hashes differ.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["invalid_operation"]},
+        {"code": "persistence_claim_ownership_invalid", "meaning": "The settling writer no longer owns the fenced operation claim.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["invalid_operation", "interrupted"]},
+        {"code": "persistence_selector_mode_invalid", "meaning": "Selector execution was not verified direct and non-thinking.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_not_posted", "meaning": "No reconstructed posted transaction exists.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["not_posted", "retain_review"]},
+        {"code": "persistence_not_exactly_one_event", "meaning": "Automatic persistence requires exactly one completed event.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review", "multiple_events"]},
+        {"code": "persistence_invalid_money", "meaning": "Money is nonpositive, inexact, unsupported, or outside signed 64-bit range.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review", "invalid_operation"]},
+        {"code": "persistence_currency_provenance_not_approved", "meaning": "Currency provenance is not approved for automatic persistence.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_timestamp_provenance_invalid", "meaning": "Transaction timestamp provenance is missing or not approved.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_account_not_present", "meaning": "No present source-grounded owned-account candidate was selected.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_account_not_uniquely_resolved", "meaning": "The grounded account does not resolve to exactly one confirmed owned account.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_financial_family_not_supported", "meaning": "The truthful financial family is unsupported for automatic persistence.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_triage_requires_review", "meaning": "Triage did not authorize the normal automatic path.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_assistive_selection_not_eligible", "meaning": "Assistive selector output cannot be persisted automatically.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_conflicting_non_posted_evidence", "meaning": "Unresolved non-posted state evidence conflicts with automatic insertion.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "persistence_blocked_by_rollout_mode", "meaning": "Shadow or review-only mode prevents automatic insertion.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["blocked_by_mode"]},
+        {"code": "persistence_all_gates_passed", "meaning": "Every automatic-persistence check passed in automatic mode.", "severity": "info", "safety_relevant": true, "allowed_outcomes": ["eligible"]}
+      ]
+    },
+    {
+      "namespace": "runtime_recovery",
+      "stage": "runtime",
+      "codes": [
+        {"code": "runtime_ineligible", "meaning": "The selected runtime cannot satisfy the frozen direct selector contract.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "runtime_mode_violation", "meaning": "Observed generation violated direct non-thinking mode.", "severity": "integrity", "safety_relevant": true, "allowed_outcomes": ["retain_review", "invalid_operation"]},
+        {"code": "runtime_timeout", "meaning": "The selector deadline elapsed before safe terminal completion.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retry_wait", "interrupted", "retain_review"]},
+        {"code": "runtime_output_truncated", "meaning": "Available selector output exceeded the frozen byte limit.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "runtime_unavailable", "meaning": "The local model runtime is currently unavailable.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retry_wait", "retain_review"]},
+        {"code": "source_admitted", "meaning": "Sensitive source evidence was durably admitted before processing.", "severity": "info", "safety_relevant": true, "allowed_outcomes": ["observe"]},
+        {"code": "candidate_coverage_missing", "meaning": "A user-supported value was absent from analyzer candidates.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "account_resolution_ambiguous", "meaning": "Several confirmed owned accounts match the grounded alias.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]},
+        {"code": "operation_interrupted", "meaning": "Processing stopped or lost ownership before settlement.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["interrupted", "retain_review"]},
+        {"code": "retry_exhausted", "meaning": "Automatic transient retry capacity is exhausted.", "severity": "review", "safety_relevant": true, "allowed_outcomes": ["retain_review"]}
+      ]
+    }
+  ]
+}

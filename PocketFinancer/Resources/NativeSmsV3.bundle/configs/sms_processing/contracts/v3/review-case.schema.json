@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.review-case/1",
+  "title": "Local SMS Extraction Review Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "review_case_id", "operation_id_hash", "raw_sender", "source", "source_sha256", "receipt_timestamp", "primary_reason", "reason_codes", "furthest_stage", "analyzer_suggestions", "extractor_suggestion", "account_resolution", "revision", "user_revisions", "previous_revision_hash", "revision_hash"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.review-case/1"},
+    "review_case_id": {"type": "string", "minLength": 1},
+    "operation_id_hash": {"$ref": "#/$defs/sha256"},
+    "raw_sender": {"type": "string"},
+    "source": {"type": "string", "minLength": 1},
+    "source_sha256": {"$ref": "#/$defs/sha256"},
+    "receipt_timestamp": {"$ref": "#/$defs/receipt_timestamp"},
+    "primary_reason": {"type": "string", "minLength": 1},
+    "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "furthest_stage": {"enum": ["admission", "configuration", "analysis_advisory", "extractor_input", "extractor_execution", "extractor_validation", "normalization", "account_resolution", "duplicate_assessment", "persistence_gate", "settlement"]},
+    "analyzer_suggestions": {"type": "array", "items": {"$ref": "#/$defs/analyzer_suggestion"}},
+    "extractor_suggestion": {"oneOf": [{"$ref": "#/$defs/semantic_result"}, {"type": "null"}]},
+    "account_resolution": {"oneOf": [{"$ref": "#/$defs/account_resolution"}, {"type": "null"}]},
+    "revision": {"type": "integer", "minimum": 1},
+    "user_revisions": {"type": "array", "items": {"$ref": "#/$defs/review_revision"}},
+    "previous_revision_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "revision_hash": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_scalar", "end_scalar", "text"],
+      "properties": {"start_scalar": {"type": "integer", "minimum": 0}, "end_scalar": {"type": "integer", "minimum": 1}, "text": {"type": "string", "minLength": 1}}
+    },
+    "receipt_timestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch_ms", "provenance", "read_only"],
+      "properties": {"epoch_ms": {"type": "integer", "minimum": 0}, "provenance": {"enum": ["platform_received", "acquisition_supplied_message_time"]}, "read_only": {"const": true}}
+    },
+    "analyzer_suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "span", "clause", "suggested_interpretation", "provenance", "analyzer_version"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "span": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]},
+        "clause": {"type": ["string", "null"]},
+        "suggested_interpretation": {},
+        "provenance": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["candidate_id", "analyzer_kind"],
+              "properties": {"candidate_id": {"type": "string", "minLength": 1}, "analyzer_kind": {"const": "candidate"}}
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cue_id", "analyzer_kind"],
+              "properties": {"cue_id": {"type": "string", "minLength": 1}, "analyzer_kind": {"const": "cue"}}
+            }
+          ]
+        },
+        "analyzer_version": {"const": "pocketfinancer.sms-analysis/2"}
+      }
+    },
+    "field_revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "value", "provenance", "span", "existing_account_id"],
+      "properties": {
+        "field": {"enum": ["amount", "direction", "account", "counterparty"]},
+        "value": {},
+        "provenance": {"enum": ["source_span_selection", "user_direction_control"]},
+        "span": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]},
+        "existing_account_id": {"type": ["string", "null"], "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provenance": {"const": "user_direction_control"}}, "required": ["provenance"]},
+          "then": {"properties": {"field": {"const": "direction"}, "span": {"type": "null"}}},
+          "else": {"properties": {"span": {"$ref": "#/$defs/source_span"}}}
+        },
+        {
+          "if": {"properties": {"field": {"const": "account"}}, "required": ["field"]},
+          "then": {"properties": {"span": {"$ref": "#/$defs/source_span"}, "existing_account_id": {"type": "string", "minLength": 1}}},
+          "else": {"properties": {"existing_account_id": {"type": "null"}}}
+        }
+      ]
+    },
+    "review_revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "action", "actor_id_hash", "field_revisions", "created_at_epoch_ms", "previous_revision_hash", "revision_hash"],
+      "properties": {
+        "revision": {"type": "integer", "minimum": 1},
+        "action": {"enum": ["confirm", "correct", "reject", "save_draft", "retry"]},
+        "actor_id_hash": {"$ref": "#/$defs/sha256"},
+        "field_revisions": {"type": "array", "items": {"$ref": "#/$defs/field_revision"}},
+        "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+        "previous_revision_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "revision_hash": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"action": {"const": "correct"}}, "required": ["action"]},
+          "then": {"properties": {"field_revisions": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"action": {"enum": ["confirm", "reject", "retry"]}}, "required": ["action"]},
+          "then": {"properties": {"field_revisions": {"maxItems": 0}}}
+        },
+        {
+          "if": {"properties": {"revision": {"const": 1}}, "required": ["revision"]},
+          "then": {"properties": {"previous_revision_hash": {"type": "null"}}},
+          "else": {"properties": {"previous_revision_hash": {"$ref": "#/$defs/sha256"}}}
+        }
+      ]
+    },
+    "semantic_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["money", "direction", "account_reference", "counterparty", "evidence"],
+      "properties": {
+        "money": {"type": "object", "additionalProperties": false, "required": ["minor_units", "currency"], "properties": {"minor_units": {"type": "integer", "minimum": 1}, "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}}},
+        "direction": {"enum": ["debit", "credit"]},
+        "account_reference": {"type": "string", "minLength": 1},
+        "counterparty": {"type": ["string", "null"], "minLength": 1},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amount", "direction", "account", "counterparty"],
+          "properties": {"amount": {"$ref": "#/$defs/source_span"}, "direction": {"$ref": "#/$defs/source_span"}, "account": {"$ref": "#/$defs/source_span"}, "counterparty": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]}}
+        }
+      }
+    },
+    "account_resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "match_count", "account_id", "normalized_reference", "matched_alias_hash", "provenance"],
+      "properties": {
+        "status": {"enum": ["missing", "unresolved", "ambiguous", "uniquely_resolved"]},
+        "match_count": {"type": "integer", "minimum": 0},
+        "account_id": {"type": ["string", "null"], "minLength": 1},
+        "normalized_reference": {"type": ["string", "null"], "minLength": 1},
+        "matched_alias_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "provenance": {"const": "pocketfinancer.account-resolution-profile/1"}
+      }
+    }
+  }
+}

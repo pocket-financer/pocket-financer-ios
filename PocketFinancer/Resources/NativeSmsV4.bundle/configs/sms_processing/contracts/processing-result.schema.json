@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.processing-result/1",
+  "title": "Host-Reconstructed SMS Processing Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recognition_decision", "semantic_result", "automatic_persistence"],
+  "properties": {
+    "recognition_decision": {"enum": ["none", "abstain", "posted"]},
+    "semantic_result": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "amount_candidate_id", "direction_candidate_id", "account_candidate_id",
+            "counterparty_candidate_id", "minor_units", "currency", "currency_provenance",
+            "direction", "account_state", "counterparty_state"
+          ],
+          "properties": {
+            "amount_candidate_id": {"type": "string"},
+            "direction_candidate_id": {"type": "string"},
+            "account_candidate_id": {"type": "string"},
+            "counterparty_candidate_id": {"type": "string"},
+            "minor_units": {"type": "integer", "minimum": 1},
+            "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+            "currency_provenance": {
+              "enum": ["explicit_code", "explicit_unambiguous_symbol_or_marker", "user_primary_default"]
+            },
+            "direction": {"enum": ["debit", "credit"]},
+            "account_state": {"enum": ["present", "absent", "unknown"]},
+            "counterparty_state": {"enum": ["present", "absent", "unknown"]}
+          }
+        }
+      ]
+    },
+    "automatic_persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["safe", "reason_codes"],
+      "properties": {
+        "safe": {"type": "boolean"},
+        "reason_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    }
+  }
+}

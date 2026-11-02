@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.grounded-candidate-selector-input/1",
+  "title": "Grounded Candidate Selector Input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "analysis_id", "message", "candidates"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.grounded-candidate-selector-input/1"},
+    "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "message": {"type": "string"},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "clause", "absent"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^(?:amt|dir|acc|cp)_[0-9a-f]{12}$"},
+          "kind": {"enum": ["amount", "direction", "account", "counterparty"]},
+          "clause": {"type": ["string", "null"]},
+          "absent": {"type": "boolean"},
+          "evidence": {"type": "string"},
+          "direction": {"enum": ["debit", "credit"]}
+        }
+      }
+    }
+  }
+}

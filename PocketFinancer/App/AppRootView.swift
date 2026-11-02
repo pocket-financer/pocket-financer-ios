@@ -43,9 +43,17 @@ struct AppRootView: View {
     }
 
     private func drainPendingAlerts() async {
-        guard completedOnboarding else { return }
+        guard completedOnboarding, PrimaryCurrencySettings.confirmedCode != nil else { return }
         let service = AlertIngestionService(context: modelContext)
-        _ = await service.processPending()
+        // Process bounded batches until fewer than the requested limit complete.
+        // Each operation is independently claimed/fenced, and scene cancellation
+        // stops the loop.
+        while true {
+            guard !Task.isCancelled, scenePhase == .active else { return }
+            let completed = await service.processPending(limit: 8)
+            if completed < 8 { return }
+            await Task.yield()
+        }
     }
 }
 

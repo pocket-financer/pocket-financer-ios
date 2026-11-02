@@ -58,17 +58,9 @@ struct TransactionsView: View {
                     )
                 } else {
                     List {
-                        if !reviewTransactions.isEmpty || !reviewAlerts.isEmpty {
-                            Section("Review Required") {
-                                ForEach(reviewTransactions) { transaction in
-                                    NavigationLink {
-                                        TransactionDetailView(transaction: transaction)
-                                    } label: {
-                                        ReviewTransactionRow(transaction: transaction)
-                                    }
-                                }
-
-                                ForEach(reviewAlerts) { alert in
+                        if !processingAlerts.isEmpty {
+                            Section("Processing") {
+                                ForEach(processingAlerts) { alert in
                                     NavigationLink {
                                         AlertProcessingDetailView(alert: alert)
                                     } label: {
@@ -78,9 +70,17 @@ struct TransactionsView: View {
                             }
                         }
 
-                        if !processingAlerts.isEmpty {
-                            Section("Processing") {
-                                ForEach(processingAlerts) { alert in
+                        if !reviewTransactions.isEmpty || !reviewAlerts.isEmpty {
+                            Section("Needs Review") {
+                                ForEach(reviewTransactions) { transaction in
+                                    NavigationLink {
+                                        TransactionDetailView(transaction: transaction)
+                                    } label: {
+                                        ReviewTransactionRow(transaction: transaction)
+                                    }
+                                }
+
+                                ForEach(reviewAlerts) { alert in
                                     NavigationLink {
                                         AlertProcessingDetailView(alert: alert)
                                     } label: {

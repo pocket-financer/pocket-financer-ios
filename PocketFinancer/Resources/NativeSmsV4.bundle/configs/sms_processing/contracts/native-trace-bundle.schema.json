@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.native-trace-bundle/1",
+  "title": "Encrypted Explicit-Consent Native Trace Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "transfer_id",
+    "created_at_epoch_ms",
+    "source_platform",
+    "release_id",
+    "release_manifest_sha256",
+    "explicit_consent",
+    "purpose",
+    "encryption",
+    "source_ref_hashes",
+    "record_count",
+    "payload_ciphertext_base64",
+    "payload_ciphertext_sha256"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.native-trace-bundle/1"},
+    "transfer_id": {"$ref": "#/$defs/uuid"},
+    "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+    "source_platform": {"enum": ["android", "ios"]},
+    "release_id": {"type": "string", "minLength": 1},
+    "release_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "explicit_consent": {"const": true},
+    "purpose": {"const": "local_workbench_inspection"},
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_protection", "nonce_base64"],
+      "properties": {
+        "algorithm": {"const": "AES-256-GCM"},
+        "key_protection": {"enum": ["os_protected", "user_passphrase"]},
+        "nonce_base64": {"type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$"}
+      }
+    },
+    "source_ref_hashes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
+    "record_count": {"type": "integer", "minimum": 0},
+    "payload_ciphertext_base64": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+    },
+    "payload_ciphertext_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}

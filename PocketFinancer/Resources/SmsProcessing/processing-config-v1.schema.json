@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.processing-config/1",
+  "title": "Immutable Native SMS Processing Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "operation_id",
+    "parent_operation_id",
+    "source_ref_hash",
+    "trigger",
+    "created_at_epoch_ms",
+    "admission_epoch_ms",
+    "contract_release",
+    "analyzer",
+    "currency_context",
+    "source_timestamp",
+    "selector",
+    "persistence_policy",
+    "config_hash"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.processing-config/1"},
+    "operation_id": {"$ref": "#/$defs/uuid"},
+    "parent_operation_id": {
+      "oneOf": [{"$ref": "#/$defs/uuid"}, {"type": "null"}]
+    },
+    "source_ref_hash": {"$ref": "#/$defs/sha256"},
+    "trigger": {
+      "enum": [
+        "realtime",
+        "historical",
+        "manual",
+        "retry",
+        "diagnostic",
+        "app_intent",
+        "background_recovery"
+      ]
+    },
+    "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+    "admission_epoch_ms": {"type": "integer", "minimum": 0},
+    "contract_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_id", "manifest_sha256"],
+      "properties": {
+        "release_id": {"type": "string", "minLength": 1},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "analyzer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "behavior_version",
+        "unicode_behavior_version",
+        "currency_asset_sha256",
+        "profile_assets"
+      ],
+      "properties": {
+        "behavior_version": {"const": "pocketfinancer.structural-sms-analyzer/2"},
+        "unicode_behavior_version": {"type": "string", "minLength": 1},
+        "currency_asset_sha256": {"$ref": "#/$defs/sha256"},
+        "profile_assets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/asset_binding"}
+        }
+      }
+    },
+    "currency_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary_currency", "enabled_profile_ids"],
+      "properties": {
+        "primary_currency": {
+          "enum": ["AED", "AUD", "CAD", "CHF", "EUR", "GBP", "INR", "JPY", "SGD", "USD"]
+        },
+        "enabled_profile_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "source_timestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch_ms", "provenance", "timezone_id", "policy_version"],
+      "properties": {
+        "epoch_ms": {"type": ["integer", "null"], "minimum": 0},
+        "provenance": {
+          "enum": [
+            "source_supplied_transaction_time",
+            "acquisition_supplied_message_time",
+            "user_supplied_time",
+            "admission_time",
+            "user_corrected_time",
+            "unknown"
+          ]
+        },
+        "timezone_id": {"type": "string", "minLength": 1},
+        "policy_version": {"type": "string", "minLength": 1}
+      }
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligible",
+        "ineligibility_reason",
+        "model_identifier",
+        "model_file_sha256",
+        "runtime_version",
+        "os_version",
+        "device_cohort",
+        "prompt_version",
+        "prompt_sha256",
+        "validation_profile",
+        "generation_mode",
+        "decoding",
+        "answer_token_limit",
+        "raw_output_utf8_byte_limit",
+        "parser_deadline_ms"
+      ],
+      "properties": {
+        "eligible": {"type": "boolean"},
+        "ineligibility_reason": {"type": ["string", "null"], "minLength": 1},
+        "model_identifier": {"type": ["string", "null"], "minLength": 1},
+        "model_file_sha256": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        },
+        "runtime_version": {"type": "string", "minLength": 1},
+        "os_version": {"type": "string", "minLength": 1},
+        "device_cohort": {"type": "string", "minLength": 1},
+        "prompt_version": {"type": "string", "minLength": 1},
+        "prompt_sha256": {"$ref": "#/$defs/sha256"},
+        "validation_profile": {"const": "pocketfinancer.selector-validation-profile/2"},
+        "generation_mode": {"const": "DIRECT_NON_THINKING"},
+        "decoding": {"const": "greedy"},
+        "answer_token_limit": {"const": 512},
+        "raw_output_utf8_byte_limit": {"const": 16384},
+        "parser_deadline_ms": {"const": 60000}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"eligible": {"const": true}}},
+          "then": {
+            "properties": {
+              "ineligibility_reason": {"const": null},
+              "model_identifier": {"type": "string", "minLength": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "ineligibility_reason": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      ]
+    },
+    "persistence_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "rollout_mode"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "rollout_mode": {"enum": ["shadow", "review_only", "automatic"]}
+      }
+    },
+    "config_hash": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "asset_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "sha256"],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

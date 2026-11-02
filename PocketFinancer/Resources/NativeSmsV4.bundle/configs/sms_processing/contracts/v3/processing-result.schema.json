@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.processing-result/3",
+  "title": "Host-Normalized SLM-Primary SMS Processing Result V3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "status", "recognition_decision", "semantic_result", "receipt_timestamp", "account_resolution", "duplicate_assessment", "automatic_persistence", "reason_codes"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.processing-result/3"},
+    "status": {"enum": ["bypassed", "not_posted", "review", "interrupted", "eligible", "blocked"]},
+    "recognition_decision": {"type": ["string", "null"], "enum": [null, "none", "abstain", "posted"]},
+    "semantic_result": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/semantic_result"}]},
+    "receipt_timestamp": {"$ref": "#/$defs/receipt_timestamp"},
+    "account_resolution": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/account_resolution"}]},
+    "duplicate_assessment": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/duplicate_assessment"}]},
+    "automatic_persistence": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/persistence_decision"}]},
+    "reason_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"recognition_decision": {"const": "posted"}}},
+      "then": {"properties": {"semantic_result": {"$ref": "#/$defs/semantic_result"}}},
+      "else": {"properties": {"semantic_result": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_scalar", "end_scalar", "text"],
+      "properties": {
+        "start_scalar": {"type": "integer", "minimum": 0},
+        "end_scalar": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "semantic_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["money", "direction", "account_reference", "counterparty", "evidence"],
+      "properties": {
+        "money": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minor_units", "currency"],
+          "properties": {
+            "minor_units": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+            "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
+          }
+        },
+        "direction": {"enum": ["debit", "credit"]},
+        "account_reference": {"type": "string", "minLength": 1},
+        "counterparty": {"type": ["string", "null"], "minLength": 1},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amount", "direction", "account", "counterparty"],
+          "properties": {
+            "amount": {"$ref": "#/$defs/source_span"},
+            "direction": {"$ref": "#/$defs/source_span"},
+            "account": {"$ref": "#/$defs/source_span"},
+            "counterparty": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]}
+          }
+        }
+      }
+    },
+    "receipt_timestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch_ms", "provenance", "read_only"],
+      "properties": {
+        "epoch_ms": {"type": "integer", "minimum": 0},
+        "provenance": {"enum": ["platform_received", "acquisition_supplied_message_time"]},
+        "read_only": {"const": true}
+      }
+    },
+    "account_resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "match_count", "account_id", "normalized_reference", "matched_alias_hash", "provenance"],
+      "properties": {
+        "status": {"enum": ["missing", "unresolved", "ambiguous", "uniquely_resolved"]},
+        "match_count": {"type": "integer", "minimum": 0},
+        "account_id": {"type": ["string", "null"], "minLength": 1},
+        "normalized_reference": {"type": ["string", "null"], "minLength": 1},
+        "matched_alias_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "provenance": {"const": "pocketfinancer.account-resolution-profile/1"}
+      }
+    },
+    "duplicate_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "idempotency_key", "source_event_key", "transaction_fingerprint"],
+      "properties": {
+        "status": {"enum": ["clear", "possible_duplicate", "already_persisted"]},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "source_event_key": {"type": "string", "minLength": 1},
+        "transaction_fingerprint": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "persistence_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "primary_reason", "checks"],
+      "properties": {
+        "result": {"enum": ["eligible", "review_required", "not_posted", "blocked_by_mode", "invalid_operation"]},
+        "primary_reason": {"type": "string", "minLength": 1},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["check", "passed", "reason_code"],
+            "properties": {
+              "check": {"enum": ["operation_integrity", "configuration_hash", "claim_ownership", "extractor_mode", "posted_extraction", "grounded_mandatory_fields", "valid_money", "receipt_timestamp", "account_resolution", "duplicate_assessment", "rollout_mode"]},
+              "passed": {"type": "boolean"},
+              "reason_code": {"type": ["string", "null"], "minLength": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}

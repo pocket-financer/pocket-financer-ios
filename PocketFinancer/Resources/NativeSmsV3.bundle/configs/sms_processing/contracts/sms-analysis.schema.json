@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.sms-analysis/1",
+  "title": "Deterministic SMS Analysis",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract", "analysis_id", "source_fingerprint", "profile_id", "config_hash",
+    "primary_currency", "source_length_chars", "source_length_utf8", "clauses",
+    "candidates", "cues", "reason_codes", "metadata"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.sms-analysis/1"},
+    "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "source_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "profile_id": {"type": "string", "minLength": 1},
+    "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "primary_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "source_length_chars": {"type": "integer", "minimum": 0},
+    "source_length_utf8": {"type": "integer", "minimum": 0},
+    "clauses": {"type": "array", "items": {"$ref": "#/$defs/clause"}},
+    "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
+    "cues": {"type": "array", "items": {"$ref": "#/$defs/cue"}},
+    "reason_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "metadata": {"type": "object"}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_char", "end_char", "start_utf8", "end_utf8", "text"],
+      "properties": {
+        "start_char": {"type": "integer", "minimum": 0},
+        "end_char": {"type": "integer", "minimum": 0},
+        "start_utf8": {"type": "integer", "minimum": 0},
+        "end_utf8": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "clause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clause_id", "evidence"],
+      "properties": {
+        "clause_id": {"type": "string", "pattern": "^cl[0-9]+$"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "kind", "clause_id", "evidence", "value", "context", "explicit_absence"],
+      "properties": {
+        "candidate_id": {"type": "string"},
+        "kind": {"enum": ["amount", "direction", "account", "counterparty"]},
+        "clause_id": {"type": ["string", "null"]},
+        "evidence": {"oneOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]},
+        "value": {"type": "object"},
+        "context": {"type": "array", "items": {"type": "string"}},
+        "explicit_absence": {"type": "boolean"}
+      }
+    },
+    "cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cue_id", "kind", "clause_id", "evidence", "reason_code"],
+      "properties": {
+        "cue_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "clause_id": {"type": "string"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "reason_code": {"type": "string"}
+      }
+    }
+  }
+}

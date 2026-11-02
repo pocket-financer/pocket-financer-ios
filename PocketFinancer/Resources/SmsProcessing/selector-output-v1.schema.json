@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.grounded-candidate-selector/1",
+  "title": "Grounded Candidate Selector Output",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision"],
+      "properties": {"decision": {"const": "none"}}
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision"],
+      "properties": {"decision": {"const": "abstain"}}
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "amount", "direction", "account", "counterparty"],
+      "properties": {
+        "decision": {"const": "posted"},
+        "amount": {"type": "string", "pattern": "^amt_[0-9a-f]{12}$"},
+        "direction": {"type": "string", "pattern": "^dir_[0-9a-f]{12}$"},
+        "account": {"type": "string", "pattern": "^acc_[0-9a-f]{12}$"},
+        "counterparty": {"type": "string", "pattern": "^cp_[0-9a-f]{12}$"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.account-resolution-profile-schema/1",
+  "title": "Deterministic Local Account Resolution Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "catalog_contract",
+    "normalization",
+    "statuses",
+    "automatic_gate",
+    "default_account_allowed"
+  ],
+  "properties": {
+    "contract": {"const": "pocketfinancer.account-resolution-profile/1"},
+    "catalog_contract": {"const": "local-opaque-owned-account-catalog"},
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unicode", "account_reference", "catalog_key", "comparison"],
+      "properties": {
+        "unicode": {"const": "NFKC"},
+        "account_reference": {"const": "NFKC-trim-casefold-then-first-VPA-else-exactly-one-masked-or-bare-3-to-8-decimal-digit-suffix"},
+        "catalog_key": {"const": "vpa-or-suffix-type-prefix-plus-normalized-reference"},
+        "comparison": {"const": "exact-normalized-key-equality"}
+      }
+    },
+    "statuses": {
+      "type": "array",
+      "const": ["missing", "unresolved", "ambiguous", "uniquely_resolved"]
+    },
+    "automatic_gate": {"const": "exactly_one_owned_match"},
+    "default_account_allowed": {"const": false}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "contract": "pocketfinancer.timestamp-policy/1",
+  "automatic_provenance": [
+    "source_supplied_transaction_time",
+    "acquisition_supplied_message_time"
+  ],
+  "review_provenance": ["user_supplied_time", "admission_time", "user_corrected_time", "unknown"],
+  "missing_source_time_is_unknown": true,
+  "admission_time_is_transaction_time": false,
+  "shortcut_parameter_is_authenticated_messages_time": false
+}

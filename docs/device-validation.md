@@ -10,8 +10,20 @@ These checks cannot be proven by a simulator or CI. Run them on the signed iPhon
 4. Add `Import Transaction Alert`. Set Message Body to `Shortcut Input`, then select its `Content` property. Leave Sender, Received At, and Source Application empty; the app uses the automation execution time.
 5. Choose Run Immediately and save the automation.
 6. Send a synthetic debit alert while the phone is unlocked, then while locked after one unlock.
-7. Open the alert's **Processing Details** and confirm it shows the exact persisted filter decision, cumulative structured-generation JSON snapshots, exact instructions/request, the post-schema `ParsedAlertDraft`, classification/direction/amount/merchant/account/date validation-stage outcomes, response/total timing, safe result code, disposition, and immutable accepted transaction snapshot. Confirm raw snapshots, mapped fields, and the current ledger are labeled separately.
-8. Confirm exactly one transaction appears, the evidence is correct, and replaying the same normalized body within 15 seconds is marked duplicate even when sender metadata differs. Confirm the same body after 15 seconds can be processed as a legitimate second transaction.
+7. Open the alert's **Processing Details** and confirm it shows the exact
+   persisted filter decision, cumulative structured-generation JSON snapshots,
+   exact instructions/request, the post-schema `ParsedAlertDraft`,
+   classification/direction/amount/account/counterparty validation-stage outcomes,
+   host-owned receipt-time provenance, response/total timing, safe result code,
+   disposition, and immutable accepted transaction snapshot. Confirm raw
+   snapshots, mapped fields, and the current ledger are labeled separately; the
+   model and Review must not replace the receipt time.
+8. Under frozen v4, confirm the grounded result appears exactly once in Review,
+   then confirm it and verify exactly one transaction appears. For the planned
+   successor route, separately verify that a complete valid uniquely resolved
+   non-duplicate result enters Transactions without a review case. Replay the same
+   normalized body within 15 seconds and confirm duplicate handling remains
+   version-correct even when sender metadata differs.
 9. Edit the transaction and confirm **Edited by owner** changes while the original run's draft and accepted snapshot remain unchanged. Retry it and confirm Pocket Financer preserves the owner correction without starting another model attempt or changing the historical run.
 10. After the proof works, create three otherwise identical automations for `Rs`, `INR`, and `₹`, then remove the `debited` automation. Multiple Message criteria are AND, so the currency markers must not be placed together in one trigger.
 11. Disable Apple Intelligence or use a not-ready state; confirm the alert remains pending and succeeds after retry.

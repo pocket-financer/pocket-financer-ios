@@ -1,0 +1,155 @@
+{
+  "algorithms": {
+    "analysis_id_v1": "sha256(operation_id NUL source_sha256 NUL currency_context_hash)[:24]",
+    "analysis_id_v2": "sha256(operation_id NUL source_sha256 NUL operation_config_hash NUL analyzer_behavior_version)[:24]",
+    "candidate_id": "kind_prefix + '_' + sha256(analysis_id '|' kind '|' span_or_absent '|' canonical_value_json)[:12]",
+    "canonical_json": "utf8-json-sort-keys-compact-no-ascii-escaping",
+    "unicode_behavior": "Unicode 14.0.0 per-code-point NFKC then casefold; collapse Unicode whitespace"
+  },
+  "artifacts": [
+    {
+      "contract": "pocketfinancer.sms-analysis/1",
+      "path": "configs/sms_processing/contracts/sms-analysis.schema.json",
+      "sha256": "9aadd93edbd205188b94b1061c73a90348e7ef7b3d3646c691f476f5701622fa"
+    },
+    {
+      "contract": "pocketfinancer.sms-analysis/2",
+      "path": "configs/sms_processing/contracts/v2/sms-analysis.schema.json",
+      "sha256": "359b32c0ea9055aec2aaa2ab475dbc3e1316113f260cd4c5b8af48c6258c1ffe"
+    },
+    {
+      "contract": "pocketfinancer.grounded-candidate-selector-input/1",
+      "path": "configs/sms_processing/contracts/grounded-candidate-selector-input.schema.json",
+      "sha256": "b9b381c76864abf95de6b429f67a73519b9777652cb3d5052b51ffacbf92539b"
+    },
+    {
+      "contract": "pocketfinancer.grounded-candidate-selector/1",
+      "path": "configs/sms_processing/contracts/grounded-candidate-selector.schema.json",
+      "sha256": "5b16b9a092eb396a8ca0691d4a0f408cbb93016842b1d2842b8dd759b14dc2e8"
+    },
+    {
+      "contract": "pocketfinancer.selector-validation-profile/3",
+      "path": "configs/sms_processing/contracts/v3/selector-validation-profile.json",
+      "sha256": "99c24fef59066f3ce86238b8545d186ca57c161acf25dbf88de3bc0abbc8edab"
+    },
+    {
+      "contract": "pocketfinancer.selector-validation-profile-schema/3",
+      "path": "configs/sms_processing/contracts/v3/selector-validation-profile.schema.json",
+      "sha256": "00a402f4fe9decdc7a79415afa43fedf9cf9f385d29dd063cf03979077544373"
+    },
+    {
+      "contract": "pocketfinancer.processing-config/2",
+      "path": "configs/sms_processing/contracts/v2/processing-config.schema.json",
+      "sha256": "a0cc5c88502113282b90a7972fd335a55acfe170aea9382cea8ecba49cd89033"
+    },
+    {
+      "contract": "pocketfinancer.processing-result/1",
+      "path": "configs/sms_processing/contracts/processing-result.schema.json",
+      "sha256": "3771509edd1673c4d8397aced8486ed554f6a2d93bf2d6693511c9d89ab3359d"
+    },
+    {
+      "contract": "pocketfinancer.processing-result/2",
+      "path": "configs/sms_processing/contracts/v2/processing-result.schema.json",
+      "sha256": "44dc3f2c82c55ae60ec56498adeac9ed17b7f6ce3560662421cbab79cbcfc706"
+    },
+    {
+      "contract": "pocketfinancer.processing-trace/1",
+      "path": "configs/sms_processing/contracts/processing-trace.schema.json",
+      "sha256": "334bd6b8930d70a3df74db30d4c89a4edb79a9f27924b163849d7bbb93b5446a"
+    },
+    {
+      "contract": "pocketfinancer.processing-trace/2",
+      "path": "configs/sms_processing/contracts/v2/processing-trace.schema.json",
+      "sha256": "91b79f7169d23410339f8d4ea79b61efcc90c5f8ad5fe9660bfa21b2d02c2089"
+    },
+    {
+      "contract": "pocketfinancer.user-feedback/1",
+      "path": "configs/sms_processing/contracts/user-feedback.schema.json",
+      "sha256": "af427f8cafb8886f196b58640e665b578e3617eca5da96bf116a7cf36b7ac403"
+    },
+    {
+      "contract": "pocketfinancer.user-feedback/2",
+      "path": "configs/sms_processing/contracts/v2/user-feedback.schema.json",
+      "sha256": "7cdf6c348f57cc51ab74b458bd03d51716bf79b404ffe85a6e165740ef669e52"
+    },
+    {
+      "contract": "pocketfinancer.canonical-label/1",
+      "path": "configs/sms_processing/contracts/canonical-label.schema.json",
+      "sha256": "285cc031200a9a0ba447c66eaf829300b42be2eec29dc690e2b2d883e8e2d9de"
+    },
+    {
+      "contract": "pocketfinancer.native-trace-bundle/1",
+      "path": "configs/sms_processing/contracts/native-trace-bundle.schema.json",
+      "sha256": "49b4f7f2d4d0949696e50e23e4831064cd1cf839783e4f5ee36dcfb25e6d4f0d"
+    },
+    {
+      "contract": "pocketfinancer.reason-code-registry/1",
+      "path": "configs/sms_processing/contracts/v2/reason-code-registry.json",
+      "sha256": "ad2005b172245c23356dc120cfa48585eaf0fa8f7f574881d6ca96ec97b3e663"
+    },
+    {
+      "contract": "pocketfinancer.reason-code-registry-schema/1",
+      "path": "configs/sms_processing/contracts/v2/reason-code-registry.schema.json",
+      "sha256": "eeee531d6eb60dca2d506ee2147c826e25a6fa0bc15f8c5e983c028f6ab8a99f"
+    },
+    {
+      "contract": "pocketfinancer.supported-currencies/1",
+      "path": "configs/sms_processing/currency/iso-4217.json",
+      "sha256": "cb5d991a5ade283f6b2406e4427a2fd1bf5468f67ab6f573f6eb97b4c5919c78"
+    },
+    {
+      "contract": "pocketfinancer.analyzer-profile/1:core-en",
+      "path": "configs/sms_processing/profiles/core-en.json",
+      "sha256": "c9f7b95ce70528d4b564458e320a8788fdf2076ffb55d1d80e80687c48d48b52"
+    },
+    {
+      "contract": "pocketfinancer.analyzer-profile/1:india",
+      "path": "configs/sms_processing/profiles/india.json",
+      "sha256": "1cb1a4d7431bb9fe141aa90d45bb3820a115942123668eb4efd6522a73ed0156"
+    },
+    {
+      "contract": "pocketfinancer.persistence-policy/1",
+      "path": "configs/sms_processing/policies/native-persistence-v1.json",
+      "sha256": "9d02cfcbf478df6b24df96bbb4a17f42d0bb2fda6646db51e864943c6b6c93f9"
+    },
+    {
+      "contract": "pocketfinancer.timestamp-policy/1",
+      "path": "configs/sms_processing/policies/timestamp-v1.json",
+      "sha256": "671b3d4bd12b4954d17b72024b392ad00d5f9216323dd28ace9271d59b9b48c9"
+    },
+    {
+      "contract": "pocketfinancer.selector-prompt/1",
+      "path": "configs/sms_processing/prompts/grounded-candidate-selector-v1.txt",
+      "sha256": "3da47ec16b074ddcf2c03526dd968f9f1f668f9bfbed69bc01c4e2b5c613b940"
+    },
+    {
+      "contract": "pocketfinancer.native-parity-golden/1",
+      "path": "tests/sms_processing/golden/native-v1/parity-bundle.json",
+      "sha256": "6f34fdb2ba992ff7144acc41424d8cb90dde78ed0fea3af8a69431b3fa6a6c35"
+    },
+    {
+      "contract": "pocketfinancer.native-golden-financial-state/1",
+      "path": "tests/sms_processing/golden/native-v1/financial-state.json",
+      "sha256": "9c9cdb06c030f6e55ba9177cb3158ce26b70adeb3b1c6052e3623e8e6bbc3d68"
+    },
+    {
+      "contract": "pocketfinancer.native-golden-selector-validation/1",
+      "path": "tests/sms_processing/golden/native-v1/selector-validation.json",
+      "sha256": "47c960df0791c5e93c4911be630e127cdcd46b09b046ad77e8cc7c6498fc7c66"
+    }
+  ],
+  "automatic_persistence_enabled": false,
+  "contract": "pocketfinancer.contract-release-manifest/1",
+  "release_id": "native-integration-v2",
+  "runtime_policy": {
+    "answer_token_limit": 512,
+    "automatic_retry_limit": 3,
+    "claim_heartbeat_ms": 15000,
+    "claim_lease_ms": 120000,
+    "decoding": "greedy",
+    "generation_mode": "DIRECT_NON_THINKING",
+    "parser_deadline_ms": 0,
+    "raw_output_utf8_byte_limit": 16384
+  },
+  "status": "frozen_for_native_implementation"
+}

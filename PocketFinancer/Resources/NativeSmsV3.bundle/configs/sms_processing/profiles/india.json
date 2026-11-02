@@ -1,0 +1,21 @@
+{
+  "contract": "pocketfinancer.analyzer-profile/1",
+  "profile_id": "india",
+  "revision": 1,
+  "scope": "India-specific currency, numeric grouping, and payment rails",
+  "currency_markers": {"INR": ["₹", "Rs", "Rs.", "INR"]},
+  "ambiguous_currency_markers": [],
+  "grouping": ["western", "lakh"],
+  "transaction_terms": [
+    "transaction", "payment", "purchase", "transfer", "debit", "credit",
+    "paid", "spent", "received", "withdrawn", "deposited", "refunded",
+    "a/c", "acct", "account", "card", "upi", "imps", "neft", "rtgs", "nach"
+  ],
+  "rails": {
+    "upi": ["upi", "vpa"],
+    "imps": ["imps"],
+    "neft": ["neft"],
+    "rtgs": ["rtgs"],
+    "nach": ["nach", "e-mandate", "emandate"]
+  }
+}

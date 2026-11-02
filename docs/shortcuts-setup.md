@@ -42,7 +42,10 @@ Verify that:
 1. Shortcuts reports an automatic run without asking for confirmation.
 2. Pocket Financer has exactly one inbox result.
 3. The automation reports that the alert was saved locally; it does not wait for the model.
-4. Open Pocket Financer. A grounded transaction is created if the local model succeeds, or the alert remains in a privacy-safe retry/review state if it does not.
+4. Open Pocket Financer. Under frozen v4, a grounded result appears in Review for
+   owner confirmation; failures remain in a privacy-safe retry/review state. The
+   planned successor route will allow a complete valid result to enter
+   Transactions directly.
 
 ## Production-like sender-independent coverage
 

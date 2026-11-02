@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.canonical-label/2",
+  "title": "Canonical Human SMS Extraction Label V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "label_id", "source_id", "revision", "status", "decision", "operational_class", "event_state", "financial_family", "payment_rail", "event", "uncertain", "notes", "reviewer_id", "created_at_epoch_ms", "supersedes_revision"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.canonical-label/2"},
+    "label_id": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["draft", "submitted", "adjudicated", "superseded"]},
+    "decision": {"enum": ["posted", "none", "abstain"]},
+    "operational_class": {"enum": ["posted_candidate", "financial_non_posted", "non_financial", "ambiguous", "invalid_outgoing"]},
+    "event_state": {"enum": ["posted", "not_posted", "no_event", "unknown"]},
+    "financial_family": {"enum": [null, "bank_transfer", "bill_payment", "card_purchase", "cash_deposit", "cash_withdrawal", "fee_charge", "insurance", "interest", "investment", "loan", "merchant_payment", "refund", "salary_income", "upi_transfer", "wallet", "other_financial", "unknown"]},
+    "payment_rail": {"enum": [null, "bank_internal", "card", "cash", "imps", "nach", "neft", "other", "rtgs", "upi", "wallet", "unknown"]},
+    "event": {"oneOf": [{"$ref": "#/$defs/event"}, {"type": "null"}]},
+    "uncertain": {"type": "boolean"},
+    "notes": {"type": "string"},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+    "supersedes_revision": {"type": ["integer", "null"], "minimum": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "posted"}}, "required": ["decision"]},
+      "then": {"properties": {"operational_class": {"const": "posted_candidate"}, "event_state": {"const": "posted"}, "event": {"$ref": "#/$defs/event"}}},
+      "else": {"properties": {"event": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "none"}}, "required": ["decision"]},
+      "then": {
+        "oneOf": [
+          {"properties": {"operational_class": {"const": "financial_non_posted"}, "event_state": {"const": "not_posted"}}},
+          {"properties": {"operational_class": {"enum": ["non_financial", "invalid_outgoing"]}, "event_state": {"const": "no_event"}}}
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"decision": {"const": "abstain"}}, "required": ["decision"]},
+      "then": {"properties": {"operational_class": {"const": "ambiguous"}, "event_state": {"const": "unknown"}}}
+    }
+  ],
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_scalar", "end_scalar", "text"],
+      "properties": {"start_scalar": {"type": "integer", "minimum": 0}, "end_scalar": {"type": "integer", "minimum": 1}, "text": {"type": "string", "minLength": 1}}
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount_value", "currency", "amount_span", "direction", "direction_span", "account_reference", "account_span", "existing_account_id", "counterparty", "counterparty_span"],
+      "properties": {
+        "amount_value": {"type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+        "amount_span": {"$ref": "#/$defs/source_span"},
+        "direction": {"enum": ["debit", "credit"]},
+        "direction_span": {"$ref": "#/$defs/source_span"},
+        "account_reference": {"type": "string", "minLength": 1},
+        "account_span": {"$ref": "#/$defs/source_span"},
+        "existing_account_id": {"type": ["string", "null"], "minLength": 1},
+        "counterparty": {"type": ["string", "null"], "minLength": 1},
+        "counterparty_span": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]}
+      },
+      "allOf": [{
+        "if": {"properties": {"counterparty": {"type": "string"}}, "required": ["counterparty"]},
+        "then": {"properties": {"counterparty_span": {"$ref": "#/$defs/source_span"}}},
+        "else": {"properties": {"counterparty_span": {"type": "null"}}}
+      }]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "contract": "pocketfinancer.selector-validation-profile/2",
+  "selector_output_contract": "pocketfinancer.grounded-candidate-selector/1",
+  "generation": {
+    "mode": "DIRECT_NON_THINKING",
+    "decoding": "greedy",
+    "answer_token_limit": 512,
+    "raw_output_utf8_byte_limit": 16384,
+    "parser_deadline_ms": 60000
+  },
+  "json_policy": {
+    "exactly_one_document": true,
+    "reject_duplicate_keys": true,
+    "reject_additional_properties": true,
+    "reject_non_string_discriminator": true,
+    "reject_unknown_candidate_ids": true,
+    "reject_wrong_candidate_kinds": true,
+    "reject_cross_clause_core_selection": true,
+    "repair_invalid_output": false
+  },
+  "reason_codes": [
+    "selector_malformed_json",
+    "selector_duplicate_json_key",
+    "selector_output_not_object",
+    "selector_decision_type_invalid",
+    "selector_unknown_decision",
+    "selector_non_posted_extra_fields",
+    "selector_posted_field_set_invalid",
+    "selector_candidate_id_invalid",
+    "selector_candidate_ids_ambiguous",
+    "selector_unknown_or_cross_message_candidate",
+    "selector_candidate_kind_mismatch",
+    "selector_required_candidate_absent",
+    "selector_required_evidence_missing",
+    "selector_cross_clause_core_selection",
+    "selector_candidate_metadata_invalid",
+    "selector_absent_candidate_metadata_invalid",
+    "selector_optional_evidence_missing"
+  ]
+}

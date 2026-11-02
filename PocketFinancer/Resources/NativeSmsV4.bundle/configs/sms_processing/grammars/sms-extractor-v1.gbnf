@@ -1,0 +1,16 @@
+root ::= ws (none | abstain | posted) ws
+none ::= "{" ws "\"decision\"" ws ":" ws "\"none\"" ws "}"
+abstain ::= "{" ws "\"decision\"" ws ":" ws "\"abstain\"" ws "}"
+posted ::= "{" ws "\"decision\"" ws ":" ws "\"posted\"" ws "," ws "\"amount\"" ws ":" ws amount ws "," ws "\"direction\"" ws ":" ws direction ws "," ws "\"account\"" ws ":" ws account ws "," ws "\"counterparty\"" ws ":" ws (counterparty | "null") ws "}"
+amount ::= "{" ws "\"value\"" ws ":" ws decimal-string ws "," ws "\"currency\"" ws ":" ws currency-string ws "," ws "\"evidence\"" ws ":" ws span ws "}"
+direction ::= "{" ws "\"value\"" ws ":" ws ("\"debit\"" | "\"credit\"") ws "," ws "\"evidence\"" ws ":" ws span ws "}"
+account ::= "{" ws "\"reference\"" ws ":" ws json-string ws "," ws "\"evidence\"" ws ":" ws span ws "}"
+counterparty ::= "{" ws "\"value\"" ws ":" ws json-string ws "," ws "\"evidence\"" ws ":" ws span ws "}"
+span ::= "{" ws "\"start_scalar\"" ws ":" ws integer ws "," ws "\"end_scalar\"" ws ":" ws integer ws "," ws "\"text\"" ws ":" ws json-string ws "}"
+decimal-string ::= "\"" ("0" | [1-9] [0-9]*) ("." [0-9]+)? "\""
+currency-string ::= "\"" [A-Z] [A-Z] [A-Z] "\""
+integer ::= "0" | [1-9] [0-9]*
+json-string ::= "\"" json-char* "\""
+json-char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\n\r]*

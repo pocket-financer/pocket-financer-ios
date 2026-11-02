@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.reason-code-registry-schema/1",
+  "title": "Native SMS Reason Code Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "unknown_safety_code_policy", "namespaces"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.reason-code-registry/1"},
+    "unknown_safety_code_policy": {"const": "retain_review"},
+    "namespaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["namespace", "stage", "codes"],
+        "properties": {
+          "namespace": {"type": "string", "minLength": 1},
+          "stage": {
+            "enum": [
+              "admission",
+              "analysis",
+              "triage",
+              "selector_validation",
+              "runtime",
+              "reconstruction",
+              "account_resolution",
+              "persistence_gate",
+              "review",
+              "recovery",
+              "settlement"
+            ]
+          },
+          "codes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "meaning", "severity", "safety_relevant", "allowed_outcomes"],
+              "properties": {
+                "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+                "meaning": {"type": "string", "minLength": 1},
+                "severity": {"enum": ["info", "review", "terminal", "integrity"]},
+                "safety_relevant": {"type": "boolean"},
+                "allowed_outcomes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "observe",
+                      "invoke",
+                      "discard",
+                      "retain_review",
+                      "retry_wait",
+                      "interrupted",
+                      "not_posted",
+                      "multiple_events",
+                      "blocked_by_mode",
+                      "invalid_operation",
+                      "eligible"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

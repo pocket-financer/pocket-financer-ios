@@ -189,6 +189,7 @@ private struct TransactionEditView: View {
     @State private var occurredAt: Date
     @State private var selectedAccountID: UUID?
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     init(transaction: Transaction) {
         self.transaction = transaction
@@ -250,6 +251,7 @@ private struct TransactionEditView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
+                        .disabled(isSaving)
                         .accessibilityIdentifier("save-transaction-edit")
                 }
             }
@@ -271,7 +273,7 @@ private struct TransactionEditView: View {
     private func save() {
         guard
             let minorUnits = try? AmountParser.minorUnits(
-                from: "INR \(amountText)",
+                from: "\(transaction.currencyCode) \(amountText)",
                 currencyCode: transaction.currencyCode
             )
         else {
@@ -293,45 +295,92 @@ private struct TransactionEditView: View {
             return
         }
 
-        let sourceAlert: InboxAlert
         do {
-            guard let persistedSourceAlert = try fetchSourceAlert() else {
+            guard try fetchSourceAlert() != nil else {
                 errorMessage = "The source alert is missing, so this review cannot be saved safely."
                 return
             }
-            sourceAlert = persistedSourceAlert
+            let transactionID = transaction.id
+            let revisions = try modelContext.fetch(
+                FetchDescriptor<SmsTransactionRevision>(
+                    predicate: #Predicate { $0.transactionID == transactionID }
+                )
+            )
+            let previous = revisions.filter(\.isCurrentProjection).max {
+                $0.revision < $1.revision
+            }
+            let corrections = makeCorrections(
+                minorUnits: minorUnits,
+                merchant: trimmedMerchant,
+                direction: direction,
+                occurredAt: occurredAt,
+                accountID: selectedAccount.id,
+                previousRevisionID: previous?.id
+            )
+            let command = TransactionProjectionEditCommand(
+                actionID: UUID(),
+                transactionID: transactionID,
+                expectedRevision: previous?.revision ?? -1,
+                amountMinorUnits: minorUnits,
+                currencyCode: transaction.currencyCode,
+                direction: direction,
+                merchant: trimmedMerchant,
+                accountID: selectedAccount.id,
+                occurredAt: occurredAt,
+                corrections: corrections
+            )
+            isSaving = true
+            let container = modelContext.container
+            Task { @MainActor in
+                defer { isSaving = false }
+                do {
+                    _ = try await SmsProcessingStore(modelContainer: container)
+                        .editTransactionProjection(command)
+                    dismiss()
+                } catch {
+                    errorMessage =
+                        "The correction could not be saved. The previous transaction remains unchanged."
+                }
+            }
         } catch {
-            errorMessage = "The source alert could not be loaded. No changes were saved."
-            return
+            errorMessage = "The source or revision history could not be loaded. No changes were saved."
         }
+    }
 
-        let valuesChanged =
-            transaction.amountMinorUnits != minorUnits
-            || transaction.merchant != trimmedMerchant
-            || transaction.direction != direction
-            || transaction.occurredAt != occurredAt
-            || transaction.accountID != selectedAccount.id
-            || transaction.accountLabel != selectedAccount.name
-
-        transaction.amountMinorUnits = minorUnits
-        transaction.merchant = trimmedMerchant
-        transaction.direction = direction
-        transaction.occurredAt = occurredAt
-        transaction.accountID = selectedAccount.id
-        transaction.accountLabel = selectedAccount.name
-        transaction.isEdited = transaction.isEdited || valuesChanged
-        transaction.reviewState = .confirmed
-        transaction.updatedAt = .now
-        sourceAlert.status = .imported
-        sourceAlert.lastErrorCode = nil
-        sourceAlert.updatedAt = .now
-        do {
-            try modelContext.save()
-            dismiss()
-        } catch {
-            modelContext.rollback()
-            errorMessage = "The correction could not be saved. The previous transaction remains unchanged."
+    private func makeCorrections(
+        minorUnits: Int64,
+        merchant: String,
+        direction: TransactionDirection,
+        occurredAt: Date,
+        accountID: UUID,
+        previousRevisionID: UUID?
+    ) -> [SmsFieldCorrection] {
+        var corrections: [SmsFieldCorrection] = []
+        func append(_ field: String, _ value: String) {
+            corrections.append(
+                SmsFieldCorrection(
+                    field: field,
+                    classification: .suppliedManualUngroundedValue,
+                    previousRevisionID: previousRevisionID,
+                    candidateID: nil,
+                    evidence: nil,
+                    newValue: value
+                )
+            )
         }
+        if transaction.amountMinorUnits != minorUnits {
+            append("amount_minor_units", String(minorUnits))
+        }
+        if transaction.merchant != merchant { append("counterparty", merchant) }
+        if transaction.direction != direction { append("direction", direction.rawValue) }
+        if transaction.occurredAt != occurredAt {
+            append(
+                "occurred_at_epoch_ms",
+                String(Int64((occurredAt.timeIntervalSince1970 * 1_000).rounded(.towardZero)))
+            )
+        }
+        if transaction.accountID != accountID { append("account_id", accountID.uuidString) }
+        return corrections
     }
 
     private func fetchSourceAlert() throws -> InboxAlert? {

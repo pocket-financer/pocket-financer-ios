@@ -1,0 +1,1275 @@
+{
+  "contract": "pocketfinancer.reason-code-registry/2",
+  "predecessor": "pocketfinancer.reason-code-registry/1",
+  "legacy_meanings_frozen": true,
+  "unknown_safety_code_policy": "retain_review",
+  "namespaces": [
+    {
+      "namespace": "analysis",
+      "stage": "analysis",
+      "codes": [
+        {
+          "code": "invalid_input",
+          "meaning": "The admitted source cannot be analyzed as a nonempty message.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard"
+          ],
+          "user_message": "The admitted source cannot be analyzed as a nonempty message."
+        },
+        {
+          "code": "reliable_outgoing_metadata",
+          "meaning": "Authoritative acquisition metadata identifies an outgoing message.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard"
+          ],
+          "user_message": "Authoritative acquisition metadata identifies an outgoing message."
+        },
+        {
+          "code": "non_posted_failure",
+          "meaning": "Source evidence states that a movement failed or was declined.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "retain_review"
+          ],
+          "user_message": "Source evidence states that a movement failed or was declined."
+        },
+        {
+          "code": "negated_movement",
+          "meaning": "Source evidence explicitly negates a financial movement.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "retain_review"
+          ],
+          "user_message": "Source evidence explicitly negates a financial movement."
+        },
+        {
+          "code": "pending_event",
+          "meaning": "Source evidence describes a pending or future movement.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Source evidence describes a pending or future movement."
+        },
+        {
+          "code": "amount_due",
+          "meaning": "Source evidence describes an amount due rather than a completed movement.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "retain_review"
+          ],
+          "user_message": "Source evidence describes an amount due rather than a completed movement."
+        },
+        {
+          "code": "request_or_authorization",
+          "meaning": "Source evidence requests approval or authorization.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "retain_review"
+          ],
+          "user_message": "Source evidence requests approval or authorization."
+        },
+        {
+          "code": "expected_refund_not_posted",
+          "meaning": "A refund or reversal is expected, anticipated, promised, or future.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "not_posted"
+          ],
+          "user_message": "A refund or reversal is expected, anticipated, promised, or future."
+        },
+        {
+          "code": "authorization_or_hold_not_posted",
+          "meaning": "An amount is merely authorized, preauthorized, or held.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "not_posted"
+          ],
+          "user_message": "An amount is merely authorized, preauthorized, or held."
+        },
+        {
+          "code": "credential_otp",
+          "meaning": "The source contains credential or one-time-password evidence.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "retain_review",
+            "invoke"
+          ],
+          "user_message": "The source contains credential or one-time-password evidence."
+        },
+        {
+          "code": "balance_information",
+          "meaning": "The source contains balance information.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "discard",
+            "invoke"
+          ],
+          "user_message": "The source contains balance information."
+        },
+        {
+          "code": "promotion",
+          "meaning": "The source contains promotional language.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "discard",
+            "retain_review"
+          ],
+          "user_message": "The source contains promotional language."
+        },
+        {
+          "code": "administrative",
+          "meaning": "The source contains administrative account language.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "discard",
+            "retain_review"
+          ],
+          "user_message": "The source contains administrative account language."
+        },
+        {
+          "code": "ambiguous_currency_marker",
+          "meaning": "A globally ambiguous currency marker cannot be resolved safely.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "A globally ambiguous currency marker cannot be resolved safely."
+        },
+        {
+          "code": "unsupported_currency_code",
+          "meaning": "The source names a valid but unsupported ISO currency.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The source names a valid but unsupported ISO currency."
+        },
+        {
+          "code": "conflicting_currencies",
+          "meaning": "The analysis contains more than one normalized currency.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The analysis contains more than one normalized currency."
+        },
+        {
+          "code": "amount_candidate_present",
+          "meaning": "At least one exact source-backed amount candidate exists.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "At least one exact source-backed amount candidate exists."
+        },
+        {
+          "code": "completed_direction_candidate_present",
+          "meaning": "At least one completed source-backed direction candidate exists.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "At least one completed source-backed direction candidate exists."
+        },
+        {
+          "code": "rail_upi",
+          "meaning": "The source contains UPI rail evidence.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "The source contains UPI rail evidence."
+        },
+        {
+          "code": "rail_imps",
+          "meaning": "The source contains IMPS rail evidence.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "The source contains IMPS rail evidence."
+        },
+        {
+          "code": "rail_neft",
+          "meaning": "The source contains NEFT rail evidence.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "The source contains NEFT rail evidence."
+        },
+        {
+          "code": "rail_rtgs",
+          "meaning": "The source contains RTGS rail evidence.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "The source contains RTGS rail evidence."
+        },
+        {
+          "code": "rail_nach",
+          "meaning": "The source contains NACH rail evidence.",
+          "severity": "info",
+          "safety_relevant": false,
+          "allowed_outcomes": [
+            "observe",
+            "invoke",
+            "retain_review"
+          ],
+          "user_message": "The source contains NACH rail evidence."
+        }
+      ]
+    },
+    {
+      "namespace": "triage",
+      "stage": "triage",
+      "codes": [
+        {
+          "code": "discard_invalid_input",
+          "meaning": "Invalid input is terminally discarded after admission policy permits erasure.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard"
+          ],
+          "user_message": "Invalid input is terminally discarded after admission policy permits erasure."
+        },
+        {
+          "code": "discard_reliable_outgoing",
+          "meaning": "Authoritatively outgoing evidence is terminally discarded.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard"
+          ],
+          "user_message": "Authoritatively outgoing evidence is terminally discarded."
+        },
+        {
+          "code": "discard_standalone_credential_otp",
+          "meaning": "A high-confidence standalone credential message is terminally discarded.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard"
+          ],
+          "user_message": "A high-confidence standalone credential message is terminally discarded."
+        },
+        {
+          "code": "discard_unapproved_request",
+          "meaning": "An unapproved payment or collection request is not posted.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "not_posted"
+          ],
+          "user_message": "An unapproved payment or collection request is not posted."
+        },
+        {
+          "code": "discard_explicit_non_posted_movement",
+          "meaning": "A deterministically failed or negated standalone movement is not posted.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard",
+            "not_posted"
+          ],
+          "user_message": "A deterministically failed or negated standalone movement is not posted."
+        },
+        {
+          "code": "discard_unambiguous_standalone_non_event",
+          "meaning": "The source is an unambiguous standalone non-event.",
+          "severity": "terminal",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "discard"
+          ],
+          "user_message": "The source is an unambiguous standalone non-event."
+        },
+        {
+          "code": "review_no_completed_event_candidate",
+          "meaning": "No completed direction candidate exists and evidence is not terminal.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "No completed direction candidate exists and evidence is not terminal."
+        },
+        {
+          "code": "review_uncertain_financial_state",
+          "meaning": "Financial uncertainty takes precedence over unrelated credential discard.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "not_posted"
+          ],
+          "user_message": "Financial uncertainty takes precedence over unrelated credential discard."
+        },
+        {
+          "code": "review_multiple_completed_event_candidates",
+          "meaning": "Several completed movement candidates require explicit resolution.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "multiple_events"
+          ],
+          "user_message": "Several completed movement candidates require explicit resolution."
+        },
+        {
+          "code": "review_missing_core_candidate",
+          "meaning": "Required amount or direction coverage is missing.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Required amount or direction coverage is missing."
+        },
+        {
+          "code": "review_conflicting_or_ambiguous_context",
+          "meaning": "Conflicting state, clause, or currency evidence requires review.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Conflicting state, clause, or currency evidence requires review."
+        },
+        {
+          "code": "invoke_grounded_single_event",
+          "meaning": "One grounded completed event is eligible for normal selection.",
+          "severity": "info",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invoke"
+          ],
+          "user_message": "One grounded completed event is eligible for normal selection."
+        }
+      ]
+    },
+    {
+      "namespace": "selector",
+      "stage": "selector_validation",
+      "codes": [
+        {
+          "code": "selector_malformed_json",
+          "meaning": "Selector output is not exactly one valid JSON document.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Selector output is not exactly one valid JSON document."
+        },
+        {
+          "code": "selector_duplicate_json_key",
+          "meaning": "Selector output repeats a JSON object key.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Selector output repeats a JSON object key."
+        },
+        {
+          "code": "selector_output_not_object",
+          "meaning": "Selector output is not a JSON object.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Selector output is not a JSON object."
+        },
+        {
+          "code": "selector_decision_type_invalid",
+          "meaning": "The decision discriminator is missing or is not a string.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The decision discriminator is missing or is not a string."
+        },
+        {
+          "code": "selector_unknown_decision",
+          "meaning": "The decision discriminator is unsupported.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The decision discriminator is unsupported."
+        },
+        {
+          "code": "selector_non_posted_extra_fields",
+          "meaning": "A none or abstain response contains undeclared fields.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "A none or abstain response contains undeclared fields."
+        },
+        {
+          "code": "selector_posted_field_set_invalid",
+          "meaning": "A posted response does not contain exactly the required fields.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "A posted response does not contain exactly the required fields."
+        },
+        {
+          "code": "selector_candidate_id_invalid",
+          "meaning": "A selected candidate identifier has an invalid type or empty value.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "A selected candidate identifier has an invalid type or empty value."
+        },
+        {
+          "code": "selector_candidate_ids_ambiguous",
+          "meaning": "The analysis contains duplicate candidate identifiers.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invalid_operation"
+          ],
+          "user_message": "The analysis contains duplicate candidate identifiers."
+        },
+        {
+          "code": "selector_unknown_or_cross_message_candidate",
+          "meaning": "A selected identifier is not bound to the current analysis.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "invalid_operation"
+          ],
+          "user_message": "A selected identifier is not bound to the current analysis."
+        },
+        {
+          "code": "selector_candidate_kind_mismatch",
+          "meaning": "A candidate was selected for the wrong semantic field.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "A candidate was selected for the wrong semantic field."
+        },
+        {
+          "code": "selector_required_candidate_absent",
+          "meaning": "Amount or direction selected an explicit-absence candidate.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Amount or direction selected an explicit-absence candidate."
+        },
+        {
+          "code": "selector_required_evidence_missing",
+          "meaning": "Required amount or direction evidence is missing.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Required amount or direction evidence is missing."
+        },
+        {
+          "code": "selector_cross_clause_core_selection",
+          "meaning": "Selected amount and direction belong to different clauses.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Selected amount and direction belong to different clauses."
+        },
+        {
+          "code": "selector_candidate_metadata_invalid",
+          "meaning": "Selected host candidate metadata violates its declared type.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "invalid_operation"
+          ],
+          "user_message": "Selected host candidate metadata violates its declared type."
+        },
+        {
+          "code": "selector_absent_candidate_metadata_invalid",
+          "meaning": "An explicit-absence candidate contains fabricated source metadata.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invalid_operation"
+          ],
+          "user_message": "An explicit-absence candidate contains fabricated source metadata."
+        },
+        {
+          "code": "selector_optional_evidence_missing",
+          "meaning": "A present optional candidate lacks source evidence.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "invalid_operation"
+          ],
+          "user_message": "A present optional candidate lacks source evidence."
+        },
+        {
+          "code": "selector_none",
+          "meaning": "The selector found no posted event among the candidates.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "not_posted",
+            "retain_review"
+          ],
+          "user_message": "The selector found no posted event among the candidates."
+        },
+        {
+          "code": "selector_abstain",
+          "meaning": "The selector declined to choose grounded candidates.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The selector declined to choose grounded candidates."
+        }
+      ]
+    },
+    {
+      "namespace": "persistence",
+      "stage": "persistence_gate",
+      "codes": [
+        {
+          "code": "persistence_unknown_analysis_contract",
+          "meaning": "The analysis contract is unknown to the automatic gate.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invalid_operation"
+          ],
+          "user_message": "The analysis contract is unknown to the automatic gate."
+        },
+        {
+          "code": "persistence_configuration_hash_mismatch",
+          "meaning": "Stored configuration and processing evidence hashes differ.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invalid_operation"
+          ],
+          "user_message": "Stored configuration and processing evidence hashes differ."
+        },
+        {
+          "code": "persistence_claim_ownership_invalid",
+          "meaning": "The settling writer no longer owns the fenced operation claim.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invalid_operation",
+            "interrupted"
+          ],
+          "user_message": "The settling writer no longer owns the fenced operation claim."
+        },
+        {
+          "code": "persistence_selector_mode_invalid",
+          "meaning": "Selector execution was not verified direct and non-thinking.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Selector execution was not verified direct and non-thinking."
+        },
+        {
+          "code": "persistence_not_posted",
+          "meaning": "No reconstructed posted transaction exists.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "not_posted",
+            "retain_review"
+          ],
+          "user_message": "No reconstructed posted transaction exists."
+        },
+        {
+          "code": "persistence_not_exactly_one_event",
+          "meaning": "Automatic persistence requires exactly one completed event.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "multiple_events"
+          ],
+          "user_message": "Automatic persistence requires exactly one completed event."
+        },
+        {
+          "code": "persistence_invalid_money",
+          "meaning": "Money is nonpositive, inexact, unsupported, or outside signed 64-bit range.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "invalid_operation"
+          ],
+          "user_message": "Money is nonpositive, inexact, unsupported, or outside signed 64-bit range."
+        },
+        {
+          "code": "persistence_currency_provenance_not_approved",
+          "meaning": "Currency provenance is not approved for automatic persistence.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Currency provenance is not approved for automatic persistence."
+        },
+        {
+          "code": "persistence_timestamp_provenance_invalid",
+          "meaning": "Transaction timestamp provenance is missing or not approved.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Transaction timestamp provenance is missing or not approved."
+        },
+        {
+          "code": "persistence_account_not_present",
+          "meaning": "No present source-grounded owned-account candidate was selected.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "No present source-grounded owned-account candidate was selected."
+        },
+        {
+          "code": "persistence_account_not_uniquely_resolved",
+          "meaning": "The grounded account does not resolve to exactly one confirmed owned account.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The grounded account does not resolve to exactly one confirmed owned account."
+        },
+        {
+          "code": "persistence_financial_family_not_supported",
+          "meaning": "The truthful financial family is unsupported for automatic persistence.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The truthful financial family is unsupported for automatic persistence."
+        },
+        {
+          "code": "persistence_triage_requires_review",
+          "meaning": "Triage did not authorize the normal automatic path.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Triage did not authorize the normal automatic path."
+        },
+        {
+          "code": "persistence_assistive_selection_not_eligible",
+          "meaning": "Assistive selector output cannot be persisted automatically.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Assistive selector output cannot be persisted automatically."
+        },
+        {
+          "code": "persistence_conflicting_non_posted_evidence",
+          "meaning": "Unresolved non-posted state evidence conflicts with automatic insertion.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Unresolved non-posted state evidence conflicts with automatic insertion."
+        },
+        {
+          "code": "persistence_blocked_by_rollout_mode",
+          "meaning": "Shadow or review-only mode prevents automatic insertion.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "blocked_by_mode"
+          ],
+          "user_message": "Shadow or review-only mode prevents automatic insertion."
+        },
+        {
+          "code": "persistence_all_gates_passed",
+          "meaning": "Every automatic-persistence check passed in automatic mode.",
+          "severity": "info",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "eligible"
+          ],
+          "user_message": "Every automatic-persistence check passed in automatic mode."
+        },
+        {
+          "code": "persistence_operation_integrity_invalid",
+          "meaning": "Stored operation integrity evidence is invalid.",
+          "user_message": "Operation integrity could not be verified.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "invalid_operation"
+          ]
+        },
+        {
+          "code": "persistence_extractor_mode_invalid",
+          "meaning": "Extractor execution was not verified as direct and non-thinking.",
+          "user_message": "The model execution mode could not be verified.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "persistence_grounded_fields_missing",
+          "meaning": "At least one mandatory posted field lacks exact source grounding.",
+          "user_message": "Choose the amount, direction, and account in the message.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "persistence_receipt_timestamp_provenance_invalid",
+          "meaning": "Native persistence requires an immutable platform-received SMS timestamp.",
+          "user_message": "The original device receipt time could not be verified.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "persistence_blocked",
+          "meaning": "At least one deterministic automatic-persistence requirement failed.",
+          "user_message": "This transaction needs review before it can be saved.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "blocked_by_mode",
+            "invalid_operation"
+          ]
+        }
+      ]
+    },
+    {
+      "namespace": "runtime_recovery",
+      "stage": "runtime",
+      "codes": [
+        {
+          "code": "runtime_ineligible",
+          "meaning": "The selected runtime cannot satisfy the frozen direct selector contract.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "The selected runtime cannot satisfy the frozen direct selector contract."
+        },
+        {
+          "code": "runtime_mode_violation",
+          "meaning": "Observed generation violated direct non-thinking mode.",
+          "severity": "integrity",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "invalid_operation"
+          ],
+          "user_message": "Observed generation violated direct non-thinking mode."
+        },
+        {
+          "code": "runtime_timeout",
+          "meaning": "The selector deadline elapsed before safe terminal completion.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retry_wait",
+            "interrupted",
+            "retain_review"
+          ],
+          "user_message": "The selector deadline elapsed before safe terminal completion."
+        },
+        {
+          "code": "runtime_output_truncated",
+          "meaning": "Available selector output exceeded the frozen byte limit.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Available selector output exceeded the frozen byte limit."
+        },
+        {
+          "code": "runtime_unavailable",
+          "meaning": "The local model runtime is currently unavailable.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retry_wait",
+            "retain_review"
+          ],
+          "user_message": "The local model runtime is currently unavailable."
+        },
+        {
+          "code": "source_admitted",
+          "meaning": "Sensitive source evidence was durably admitted before processing.",
+          "severity": "info",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "observe"
+          ],
+          "user_message": "Sensitive source evidence was durably admitted before processing."
+        },
+        {
+          "code": "candidate_coverage_missing",
+          "meaning": "A user-supported value was absent from analyzer candidates.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "A user-supported value was absent from analyzer candidates."
+        },
+        {
+          "code": "account_resolution_ambiguous",
+          "meaning": "Several confirmed owned accounts match the grounded alias.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Several confirmed owned accounts match the grounded alias."
+        },
+        {
+          "code": "operation_interrupted",
+          "meaning": "Processing stopped or lost ownership before settlement.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "interrupted",
+            "retain_review"
+          ],
+          "user_message": "Processing stopped or lost ownership before settlement."
+        },
+        {
+          "code": "retry_exhausted",
+          "meaning": "Automatic transient retry capacity is exhausted.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ],
+          "user_message": "Automatic transient retry capacity is exhausted."
+        },
+        {
+          "code": "runtime_failure",
+          "meaning": "The local extractor runtime failed before producing a complete result.",
+          "user_message": "The on-device model could not finish. Try again or review manually.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retry_wait",
+            "retain_review"
+          ]
+        },
+        {
+          "code": "user_cancelled",
+          "meaning": "The user cancelled inference and late output is fenced from settlement.",
+          "user_message": "Processing was cancelled. You can resume later.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "interrupted",
+            "retain_review"
+          ]
+        },
+        {
+          "code": "process_interrupted",
+          "meaning": "The process stopped or lost ownership before settlement.",
+          "user_message": "Processing was interrupted. You can resume later.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "interrupted",
+            "retain_review"
+          ]
+        }
+      ]
+    },
+    {
+      "namespace": "extractor",
+      "stage": "extractor_validation",
+      "codes": [
+        {
+          "code": "extractor_malformed_json",
+          "meaning": "Extractor output is not valid JSON.",
+          "user_message": "The local model returned an unreadable result.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_duplicate_json_key",
+          "meaning": "Extractor output repeats an object key at some nesting depth.",
+          "user_message": "The local model returned conflicting fields.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_extra_content",
+          "meaning": "Content exists before or after the single extractor JSON document.",
+          "user_message": "The local model returned extra text.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_output_not_object",
+          "meaning": "The extractor JSON root is not an object.",
+          "user_message": "The local model returned the wrong result shape.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_decision_type_invalid",
+          "meaning": "The extractor decision is missing or has the wrong type.",
+          "user_message": "The local model could not classify this message safely.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_unknown_decision",
+          "meaning": "The extractor decision is unsupported.",
+          "user_message": "The local model could not classify this message safely.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_non_posted_extra_fields",
+          "meaning": "A none or abstain result contains fields outside its frozen branch.",
+          "user_message": "The local model returned unsupported information.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_posted_field_set_invalid",
+          "meaning": "A posted result contains missing or unsupported fields outside its frozen branch.",
+          "user_message": "The local model returned an incomplete transaction.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_missing_amount",
+          "meaning": "A posted extraction lacks the mandatory amount.",
+          "user_message": "Choose the transaction amount in the message.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_missing_direction",
+          "meaning": "A posted extraction lacks the mandatory debit or credit direction.",
+          "user_message": "Choose whether this transaction is a debit or credit.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_missing_account",
+          "meaning": "A posted extraction lacks the mandatory account reference.",
+          "user_message": "Choose the account reference in the message.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_evidence_invalid",
+          "meaning": "An evidence value does not contain exactly a Unicode scalar span and text.",
+          "user_message": "A suggested highlight has the wrong format.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_evidence_out_of_bounds",
+          "meaning": "An evidence span lies outside the Unicode scalar bounds of the source SMS.",
+          "user_message": "A suggested highlight falls outside the message.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_evidence_mismatch",
+          "meaning": "An evidence span does not reconstruct its exact declared text.",
+          "user_message": "A suggested highlight does not match the message.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_amount_invalid",
+          "meaning": "The grounded amount cannot be normalized exactly into supported minor units.",
+          "user_message": "Check the transaction amount.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_currency_invalid",
+          "meaning": "The declared currency is unsupported or inconsistent with the frozen currency profile.",
+          "user_message": "Check the transaction currency.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_direction_invalid",
+          "meaning": "The posted direction is not exactly debit or credit.",
+          "user_message": "Choose debit or credit.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_account_reference_invalid",
+          "meaning": "The normalized account reference is not derivable from its grounded span.",
+          "user_message": "Check the highlighted account reference.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_counterparty_invalid",
+          "meaning": "The optional counterparty cannot be normalized from its grounded span.",
+          "user_message": "Check or remove the highlighted counterparty.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_amount_value_disagreement",
+          "meaning": "The declared decimal amount differs from deterministic normalization of its grounded text.",
+          "user_message": "The stated amount does not match the highlighted text.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_abstained",
+          "meaning": "The extractor declined to decide.",
+          "user_message": "The local model was unsure. Review the message.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "extractor_none",
+          "meaning": "A valid extractor none decision settled without a transaction or review case.",
+          "user_message": "No posted transaction was found.",
+          "severity": "info",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "not_posted"
+          ]
+        },
+        {
+          "code": "extractor_posted_valid",
+          "meaning": "The extractor recognized one posted event with valid grounded mandatory fields.",
+          "user_message": "A posted transaction was recognized.",
+          "severity": "info",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "observe",
+            "eligible",
+            "blocked_by_mode"
+          ]
+        }
+      ]
+    },
+    {
+      "namespace": "account",
+      "stage": "account_resolution",
+      "codes": [
+        {
+          "code": "account_resolution_unresolved",
+          "meaning": "The grounded account reference matches no owned account.",
+          "user_message": "Choose an existing account for this transaction.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        }
+      ]
+    },
+    {
+      "namespace": "duplicate",
+      "stage": "duplicate_assessment",
+      "codes": [
+        {
+          "code": "duplicate_possible",
+          "meaning": "Duplicate assessment found a possible prior transaction.",
+          "user_message": "This may already exist. Review it before saving.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        },
+        {
+          "code": "duplicate_already_persisted",
+          "meaning": "The idempotency or source-event key was already settled.",
+          "user_message": "This message has already been saved.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review",
+            "not_posted"
+          ]
+        }
+      ]
+    },
+    {
+      "namespace": "settlement",
+      "stage": "settlement",
+      "codes": [
+        {
+          "code": "review_retained",
+          "meaning": "The source and suggestions were retained locally for user review.",
+          "user_message": "Review this message before saving.",
+          "severity": "review",
+          "safety_relevant": true,
+          "allowed_outcomes": [
+            "retain_review"
+          ]
+        }
+      ]
+    }
+  ]
+}

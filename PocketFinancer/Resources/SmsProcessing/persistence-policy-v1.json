@@ -1,0 +1,32 @@
+{
+  "contract": "pocketfinancer.persistence-policy/1",
+  "default_rollout_mode": "shadow",
+  "automatic_persistence_enabled": false,
+  "approved_currency_provenance": [
+    "explicit_code",
+    "explicit_unambiguous_symbol_or_marker",
+    "user_primary_default"
+  ],
+  "approved_timestamp_provenance": [
+    "source_supplied_transaction_time",
+    "acquisition_supplied_message_time"
+  ],
+  "automatic_families": [
+    "bank_transfer",
+    "bill_payment",
+    "card_purchase",
+    "cash_deposit",
+    "cash_withdrawal",
+    "fee_charge",
+    "interest",
+    "merchant_payment",
+    "refund",
+    "salary_income",
+    "upi_transfer"
+  ],
+  "review_only_families": ["wallet", "insurance", "investment", "loan", "other_financial", "unknown"],
+  "requires_unique_confirmed_owned_account": true,
+  "allows_automatic_account_creation": false,
+  "allows_default_account_fallback": false,
+  "assistive_selection_eligible": false
+}
