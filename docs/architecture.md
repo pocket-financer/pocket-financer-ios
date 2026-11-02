@@ -6,7 +6,7 @@ Pocket Financer cannot read the iOS Messages database. A user-created Shortcuts
 automation passes message content to `Import Transaction Alert`, which writes a
 protected SwiftData inbox record and returns promptly. Foreground processing then
 uses the versioned shared SMS contract owned by the sibling
-`pF_slm_selection` repository.
+`pocket-financer-intelligence` repository.
 
 The local SLM is the central semantic classifier and extractor. Deterministic
 analysis supplies advisory cues and source spans; it is not an answer allowlist.
@@ -101,8 +101,8 @@ enter logs, telemetry, CI artifacts, screenshots, notifications, or issue report
 ## Operating and verification model
 
 Shared contracts, vectors, and evaluators run from the WSL
-`pF_slm_selection` checkout. This repository is built and tested on macOS with
-Xcode. The simulator covers UI/storage/migration behavior but does not prove
+`pocket-financer-intelligence` checkout. This repository is built and tested on
+macOS with Xcode. The simulator covers UI/storage/migration behavior but does not prove
 Foundation Models generation. Physical iPhone validation remains mandatory.
 
 See [SMS processing next steps](sms-processing-next-steps.md),

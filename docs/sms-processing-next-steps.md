@@ -3,7 +3,7 @@
 Status: **platform handoff; not a completion claim**
 Last reconciled: 2026-09-22
 
-The shared repository `pF_slm_selection` owns the canonical architecture,
+The shared repository `pocket-financer-intelligence` owns the canonical architecture,
 versioned contracts, sanitized vectors, host GGUF evaluation, native-trace import,
 and the planned Android/iOS native scoring lanes. This repository owns the
 Swift/Foundation Models, SwiftData, SwiftUI, Xcode, simulator, and physical-iPhone
@@ -56,7 +56,7 @@ from the last completed stage on the unchanged SMS body.
 
 ## Shared evaluation lane
 
-`pF_slm_selection` already provides the host GGUF evaluator and encrypted
+`pocket-financer-intelligence` already provides the host GGUF evaluator and encrypted
 native-trace import. The dedicated iOS native evaluator/scorer does not exist yet
 and remains planned. It will run the exact app contract through the Mac/Xcode lane,
 export a provenance-bound encrypted trace bundle, and score aggregate contract,

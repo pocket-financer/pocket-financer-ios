@@ -204,12 +204,14 @@ The native Android companion is [`pocket-financer-android`](https://github.com/M
 ```text
 Projects/
   pocket-financer-android/
+  pocket-financer-intelligence/
   pocket-financer-ios/
 ```
 
 The products share their canonical architecture, frozen contracts, sanitized
-vectors, and evaluators through the sibling `pF_slm_selection` repository. They
-do not share UI/runtime code, raw SMS exports, private databases, or release
+vectors, and evaluators through the sibling
+[`pocket-financer-intelligence`](https://github.com/pocket-financer/pocket-financer-intelligence)
+repository. They do not share UI/runtime code, raw SMS exports, private databases, or release
 history. Do not use a submodule or copy Android implementation into this
 repository.
 
