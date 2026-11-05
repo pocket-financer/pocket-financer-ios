@@ -1,5 +1,38 @@
 # Pocket Financer iOS contributor guidance
 
+## Cross-repository access on Windows
+
+For PocketFinancer work on this workstation, use these existing checkouts:
+
+| Repository | Windows location | Native tooling |
+| --- | --- | --- |
+| Shared SMS/data/model research | `\\wsl.localhost\Ubuntu\home\tojinotzenin\pF_slm_selection` | Ubuntu: `/home/tojinotzenin/pF_slm_selection` |
+| Android | `D:\Personal_Projects\pocket-financer\pocket-financer-android` | Windows Git, PowerShell, `gradlew.bat` |
+| iOS | `D:\Personal_Projects\pocket-financer\pocket-financer-ios` | Windows Git for local edits; macOS/Xcode for builds and devices |
+
+Read each target repo's `AGENTS.md` and respect the active task scope and workspace
+permissions. If a Windows sandbox denies WSL with `E_ACCESSDENIED`, start the
+execution tool from `C:\Users\manis`, then use its supported sandbox-escalation
+approval path for a harmless probe and authorized WSL commands:
+
+```powershell
+wsl.exe -d Ubuntu --cd /home/tojinotzenin/pF_slm_selection --exec bash -lc '<command>'
+```
+
+For Codex this means `exec_command` with
+`sandbox_permissions="require_escalated"` and a precise justification; automatic
+review applies when configured. Do not claim the repo is unavailable after only
+a sandboxed failure, ask the user to repeat access history, or use a Codex restart
+as the default remedy. If review rejects the request, respect it and report the
+action and reason. This procedure does not grant permissions or alter the sandbox.
+
+Keep Git/tooling native to each checkout. Linux Git against Windows app checkouts
+can show file-mode noise; do not reset files to remove it. Never copy private data
+between checkouts to solve access. The shared guide is
+`docs/guides/POCKETFINANCER_WINDOWS_WSL_ACCESS.md` in the WSL repo. A general Windows/WSL
+bootstrap is installed in this workstation's `C:\Users\manis\.codex\AGENTS.md`
+so a new session can learn the procedure before opening WSL.
+
 ## Codex collaboration model profile
 
 This repository currently uses the following Codex collaboration profile
