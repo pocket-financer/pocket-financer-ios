@@ -492,9 +492,10 @@ final class AlertIngestionService {
             durableAlert.sourceApplication == alert.sourceApplication
         else { throw SmsProcessingStoreError.sourceConflict }
         if [.imported, .rejected, .duplicate].contains(durableAlert.status) {
-            return .receipt(IngestionReceipt(
-                alertID: sourceID, disposition: Self.currentDisposition(for: durableAlert)
-            ))
+            return .receipt(
+                IngestionReceipt(
+                    alertID: sourceID, disposition: Self.currentDisposition(for: durableAlert)
+                ))
         }
 
         let operations = try admissionContext.fetch(
