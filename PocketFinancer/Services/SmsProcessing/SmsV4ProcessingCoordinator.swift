@@ -20,7 +20,8 @@ actor SmsV4ProcessingCoordinator {
     func process(
         source: AdmittedMessageRef,
         operation: SmsV4OperationSnapshot,
-        observer: any SmsProcessingObserver = NoOpSmsProcessingObserver()
+        observer: any SmsProcessingObserver = NoOpSmsProcessingObserver(),
+        initialClaim: SmsOperationClaim? = nil
     ) async -> SmsProcessingOutcome {
         guard source.sourceID == operation.sourceID,
             operation.operationID.uuidString.lowercased() == operation.configuration.operationID,
@@ -46,7 +47,15 @@ actor SmsV4ProcessingCoordinator {
             if let settled = try await store.settledOutcome(operationID: operation.operationID) {
                 return settled
             }
-            var claim = try await store.claim(operationID: operation.operationID)
+            var claim: SmsOperationClaim
+            if let initialClaim {
+                guard initialClaim.operationID == operation.operationID else {
+                    throw SmsProcessingStoreError.lostOwnership
+                }
+                claim = try await store.heartbeat(initialClaim)
+            } else {
+                claim = try await store.claim(operationID: operation.operationID)
+            }
             let heartbeatTask = Task { [store, initialClaim = claim] in
                 var renewableClaim = initialClaim
                 while !Task.isCancelled {

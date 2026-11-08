@@ -73,6 +73,12 @@ final class AlertIngestionService {
         let transactionWasEdited: Bool?
     }
 
+    private enum PreparedProcessing {
+        case receipt(IngestionReceipt)
+        case current(SmsV4OperationSnapshot, SmsOperationClaim)
+        case legacy(SmsOperationSnapshot, SmsOperationClaim)
+    }
+
     private static var processingClaims: [UUID: ProcessingClaim] = [:]
     private static var processingEpoch: UInt64 = 0
 
@@ -254,7 +260,8 @@ final class AlertIngestionService {
                 alert,
                 allowBeyondAutomaticAttemptLimit: true,
                 retryParentOperationID: parentOperationID,
-                retryConfigurationMode: configurationMode
+                retryConfigurationMode: configurationMode,
+                isOwnerRetry: true
             )
                 ?? IngestionReceipt(alertID: alert.id, disposition: .alreadyProcessing)
         } catch {
@@ -299,11 +306,13 @@ final class AlertIngestionService {
             guard !Task.isCancelled, Self.processingEpoch == batchEpoch else { break }
             guard let alert = try? findAlert(id: alertID) else { continue }
             do {
-                if try await classifyAndProcessIfClaimed(
+                if let receipt = try await classifyAndProcessIfClaimed(
                     alert,
                     allowBeyondAutomaticAttemptLimit: includeNeedsReview,
                     expectedProcessingEpoch: batchEpoch
-                ) != nil {
+                ), receipt.disposition != .alreadyProcessing,
+                    receipt.disposition != .processingIncomplete
+                {
                     completed += 1
                 }
             } catch {
@@ -325,7 +334,8 @@ final class AlertIngestionService {
         allowBeyondAutomaticAttemptLimit: Bool,
         expectedProcessingEpoch: UInt64? = nil,
         retryParentOperationID: UUID? = nil,
-        retryConfigurationMode: String = "current"
+        retryConfigurationMode: String = "current",
+        isOwnerRetry: Bool = false
     ) async throws -> IngestionReceipt? {
         let alertID = alert.id
         guard
@@ -362,51 +372,25 @@ final class AlertIngestionService {
         else { return nil }
         defer { Self.releaseClaim(for: alertID, claim: claim) }
 
-        if !allowBeyondAutomaticAttemptLimit,
-            currentAlert.attemptCount >= Self.automaticAttemptLimit
-        {
-            currentAlert.status = .needsReview
-            currentAlert.lastErrorCode = "automatic_retry_limit_reached"
-            currentAlert.updatedAt = .now
-            try save()
-            return IngestionReceipt(alertID: currentAlert.id, disposition: .needsReview)
+        let prepared: PreparedProcessing
+        do {
+            prepared = try SmsProcessingStore.withAdmissionLock(container: context.container) {
+                admissionContext in
+                try prepareProcessing(
+                    currentAlert,
+                    admissionContext: admissionContext,
+                    allowBeyondAutomaticAttemptLimit: allowBeyondAutomaticAttemptLimit,
+                    retryParentOperationID: retryParentOperationID,
+                    retryConfigurationMode: retryConfigurationMode,
+                    isOwnerRetry: isOwnerRetry
+                )
+            }
+        } catch SmsProcessingStoreError.admissionBusy {
+            return IngestionReceipt(alertID: alertID, disposition: .alreadyProcessing)
+        } catch SmsProcessingStoreError.sourceConflict {
+            return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
         }
-
-        guard let currentPrimaryCurrency = PrimaryCurrencySettings.confirmedCode else {
-            currentAlert.status = .pending
-            currentAlert.lastErrorCode = "configuration_primary_currency_required"
-            currentAlert.updatedAt = .now
-            try save()
-            return IngestionReceipt(alertID: currentAlert.id, disposition: .queued)
-        }
-
-        let retrySettings = try retryConfiguration(
-            parentOperationID: retryParentOperationID,
-            mode: retryConfigurationMode,
-            currentPrimaryCurrency: currentPrimaryCurrency
-        )
-        let originalContract = try originalConfigurationContract(
-            parentOperationID: retryParentOperationID,
-            mode: retryConfigurationMode
-        )
-        if let originalContract,
-            ![
-                "pocketfinancer.processing-config/2",
-                "pocketfinancer.processing-config/4",
-            ].contains(originalContract)
-        {
-            currentAlert.status = .needsReview
-            currentAlert.lastErrorCode = "original_configuration_adapter_unavailable"
-            currentAlert.updatedAt = .now
-            try save()
-            return IngestionReceipt(alertID: currentAlert.id, disposition: .needsReview)
-        }
-
-        currentAlert.status = .processing
-        currentAlert.attemptCount += 1
-        currentAlert.lastAttemptAt = .now
-        currentAlert.updatedAt = .now
-        try save()
+        if case .receipt(let receipt) = prepared { return receipt }
 
         let processingStore = SmsProcessingStore(modelContainer: context.container)
         let sourceReference = AdmittedMessageRef(
@@ -414,22 +398,11 @@ final class AlertIngestionService {
             admissionReceiptID: currentAlert.id,
             sourceDigest: CanonicalJSON.sha256(currentAlert.rawBody)
         )
-        let operationTrigger =
-            retryParentOperationID == nil
-            ? (allowBeyondAutomaticAttemptLimit ? "foreground_or_user" : "automatic_recovery")
-            : "retry"
-        let useLegacyOriginal = originalContract == "pocketfinancer.processing-config/2"
         let outcome: SmsProcessingOutcome
-        if useLegacyOriginal {
-            let snapshot = try SmsOperationSnapshotFactory(context: context).create(
-                sourceAlertID: currentAlert.id,
-                parentOperationID: retryParentOperationID,
-                trigger: operationTrigger,
-                primaryCurrency: retrySettings.primaryCurrency,
-                enabledProfiles: retrySettings.enabledProfiles,
-                selectorModelIdentifier: "apple-system-language-model",
-                selectorRuntimeVersion: ProcessInfo.processInfo.operatingSystemVersionString
-            )
+        switch prepared {
+        case .receipt(let receipt):
+            return receipt
+        case .legacy(let snapshot, let initialClaim):
             let coordinator = DefaultSmsProcessingCoordinator(
                 store: processingStore,
                 selector: directSelector,
@@ -440,17 +413,10 @@ final class AlertIngestionService {
             outcome = await coordinator.process(
                 source: sourceReference,
                 operation: snapshot,
-                observer: NoOpSmsProcessingObserver()
+                observer: NoOpSmsProcessingObserver(),
+                initialClaim: initialClaim
             )
-        } else {
-            let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
-                sourceAlertID: currentAlert.id,
-                parentOperationID: retryParentOperationID,
-                trigger: operationTrigger,
-                primaryCurrency: retrySettings.primaryCurrency,
-                enabledProfiles: retrySettings.enabledProfiles,
-                extractorEligibilityOverride: extractorEligibilityOverride
-            )
+        case .current(let snapshot, let initialClaim):
             let coordinator = SmsV4ProcessingCoordinator(
                 store: processingStore,
                 extractor: smsExtractor,
@@ -461,7 +427,8 @@ final class AlertIngestionService {
             outcome = await coordinator.process(
                 source: sourceReference,
                 operation: snapshot,
-                observer: NoOpSmsProcessingObserver()
+                observer: NoOpSmsProcessingObserver(),
+                initialClaim: initialClaim
             )
         }
         guard Self.ownsClaim(for: alertID, claim: claim) else {
@@ -497,6 +464,174 @@ final class AlertIngestionService {
             try save()
             return IngestionReceipt(alertID: alertID, disposition: .needsReview)
         }
+    }
+
+    /// Ordinary queue recovery is not an extraction retry. Selection happens before
+    /// reading current settings, and the initial durable lease is reserved before
+    /// releasing the admission lock. No source identity is inferred from content.
+    private func prepareProcessing(
+        _ alert: InboxAlert,
+        admissionContext: ModelContext,
+        allowBeyondAutomaticAttemptLimit: Bool,
+        retryParentOperationID: UUID?,
+        retryConfigurationMode: String,
+        isOwnerRetry: Bool
+    ) throws -> PreparedProcessing {
+        let sourceID = alert.id
+        guard let durableAlert = try admissionContext.fetch(
+            FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == sourceID })
+        ).first else { throw SmsProcessingStoreError.sourceNotFound }
+        // A stale context must not process or write back evidence replaced elsewhere.
+        guard durableAlert.rawBody.utf8.elementsEqual(alert.rawBody.utf8),
+            durableAlert.sender.utf8.elementsEqual(alert.sender.utf8),
+            durableAlert.receivedAt == alert.receivedAt,
+            durableAlert.sourceIdentity == alert.sourceIdentity,
+            durableAlert.sourceApplication == alert.sourceApplication
+        else { throw SmsProcessingStoreError.sourceConflict }
+        if [.imported, .rejected, .duplicate].contains(durableAlert.status) {
+            return .receipt(IngestionReceipt(
+                alertID: sourceID, disposition: Self.currentDisposition(for: durableAlert)
+            ))
+        }
+
+        let operations = try admissionContext.fetch(
+            FetchDescriptor<SmsProcessingOperation>(
+                predicate: #Predicate { $0.sourceAlertID == sourceID },
+                sortBy: [SortDescriptor(\SmsProcessingOperation.createdAt, order: .reverse)]
+            )
+        ).sorted {
+            if $0.createdAt == $1.createdAt { return $0.id.uuidString > $1.id.uuidString }
+            return $0.createdAt > $1.createdAt
+        }
+        let now = Date.now
+        if operations.contains(where: {
+            $0.settledAt == nil && $0.ownerToken != nil
+                && $0.claimExpiresAt.map { $0 > now } == true
+        }) {
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .alreadyProcessing))
+        }
+        let latest = operations.first
+        if let latest, !isOwnerRetry {
+            switch latest.state {
+            case .retainedReview:
+                alert.status = .needsReview
+                let operationID = latest.id
+                let review = try admissionContext.fetch(
+                    FetchDescriptor<SmsReviewCase>(
+                        predicate: #Predicate { $0.currentOperationID == operationID }
+                    )
+                ).first
+                alert.lastErrorCode = review?.reasonCodesRawValue
+                    .split(separator: "\n").first.map(String.init)
+                alert.updatedAt = now
+                try save()
+                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+            case .persisted:
+                alert.status = .imported
+                alert.lastErrorCode = nil
+                alert.updatedAt = now
+                try save()
+                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .imported))
+            case .discarded:
+                alert.eraseSensitiveEvidence()
+                alert.status = .rejected
+                try save()
+                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .rejected))
+            default:
+                // Frozen decoding/executable-adapter restoration is not yet supported.
+                // Keep the original operation intact and make the owner retry explicit.
+                return try requireOperationRecovery(alert, now: now)
+            }
+        }
+        if isOwnerRetry, let latest {
+            if let retryParentOperationID, retryParentOperationID != latest.id {
+                throw SmsProcessingStoreError.stateConflict
+            }
+            // Expired/malformed leases must pass through the existing recovery fence;
+            // a retry cannot make still-unsettled model work its own parent implicitly.
+            if latest.settledAt == nil {
+                guard latest.ownerToken == nil,
+                    [.ready, .interrupted, .retryWait].contains(latest.state)
+                else { return try requireOperationRecovery(alert, now: now) }
+            }
+        } else if retryParentOperationID != nil {
+            throw SmsProcessingStoreError.operationNotFound
+        }
+        let parentID = isOwnerRetry ? latest?.id : nil
+
+        if !allowBeyondAutomaticAttemptLimit,
+            durableAlert.attemptCount >= Self.automaticAttemptLimit
+        {
+            alert.status = .needsReview
+            alert.lastErrorCode = "automatic_retry_limit_reached"
+            alert.updatedAt = now
+            try save()
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+        }
+        guard let currency = PrimaryCurrencySettings.confirmedCode else {
+            alert.status = .pending
+            alert.lastErrorCode = "configuration_primary_currency_required"
+            alert.updatedAt = now
+            try save()
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .queued))
+        }
+        let settings = try retryConfiguration(
+            parentOperationID: parentID,
+            mode: retryConfigurationMode,
+            currentPrimaryCurrency: currency
+        )
+        let originalContract = try originalConfigurationContract(
+            parentOperationID: parentID, mode: retryConfigurationMode
+        )
+        if let originalContract,
+            ![
+                "pocketfinancer.processing-config/2",
+                "pocketfinancer.processing-config/4",
+            ].contains(originalContract)
+        {
+            alert.status = .needsReview
+            alert.lastErrorCode = "original_configuration_adapter_unavailable"
+            alert.updatedAt = now
+            try save()
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+        }
+        alert.status = .processing
+        alert.attemptCount = durableAlert.attemptCount + 1
+        alert.lastAttemptAt = now
+        alert.updatedAt = now
+        try save()
+        let trigger =
+            isOwnerRetry
+            ? "retry" : (allowBeyondAutomaticAttemptLimit ? "foreground_or_user" : "automatic_recovery")
+        if originalContract == "pocketfinancer.processing-config/2" {
+            let snapshot = try SmsOperationSnapshotFactory(context: context).create(
+                sourceAlertID: sourceID, parentOperationID: parentID, trigger: trigger,
+                primaryCurrency: settings.primaryCurrency, enabledProfiles: settings.enabledProfiles,
+                selectorModelIdentifier: "apple-system-language-model",
+                selectorRuntimeVersion: ProcessInfo.processInfo.operatingSystemVersionString
+            )
+            let claim = try SmsProcessingStore.claimForAdmission(
+                operationID: snapshot.operationID, context: context
+            )
+            return .legacy(snapshot, claim)
+        }
+        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            sourceAlertID: sourceID, parentOperationID: parentID, trigger: trigger,
+            primaryCurrency: settings.primaryCurrency, enabledProfiles: settings.enabledProfiles,
+            extractorEligibilityOverride: extractorEligibilityOverride
+        )
+        let claim = try SmsProcessingStore.claimForAdmission(
+            operationID: snapshot.operationID, context: context
+        )
+        return .current(snapshot, claim)
+    }
+
+    private func requireOperationRecovery(_ alert: InboxAlert, now: Date) throws -> PreparedProcessing {
+        alert.status = .needsReview
+        alert.lastErrorCode = "saved_operation_requires_explicit_retry"
+        alert.updatedAt = now
+        try save()
+        return .receipt(IngestionReceipt(alertID: alert.id, disposition: .processingIncomplete))
     }
 
     private func retryConfiguration(

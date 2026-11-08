@@ -1,3 +1,4 @@
+import Darwin
 import SwiftData
 import XCTest
 
@@ -541,6 +542,423 @@ final class AlertIngestionServiceTests: XCTestCase {
         }
         XCTAssertTrue(try context.fetch(FetchDescriptor<InboxAlert>()).isEmpty)
         await Task.yield()
+    }
+
+    func testPendingRecoveryReusesSettledReviewBeforeSettingsAndAttemptLimit() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        _ = await service.processPending()
+        let operation = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        let configuration = operation.configurationJSON
+        let reviewID = try XCTUnwrap(context.fetch(FetchDescriptor<SmsReviewCase>()).first?.id)
+        let alert = try XCTUnwrap(context.fetch(FetchDescriptor<InboxAlert>()).first)
+        // Simulate termination after settlement but before the foreground status save.
+        alert.status = .processing
+        alert.attemptCount = AlertIngestionService.automaticAttemptLimit
+        try context.save()
+        let restoreMissingCurrency = usePrimaryCurrency(nil)
+        defer { restoreMissingCurrency() }
+
+        _ = await AlertIngestionService(
+            context: ModelContext(database.container),
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        ).processPending()
+
+        let fresh = ModelContext(database.container)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first?.configurationJSON, configuration)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), [reviewID])
+        let recovered = try XCTUnwrap(fresh.fetch(FetchDescriptor<InboxAlert>()).first)
+        XCTAssertEqual(recovered.id, queued.alertID)
+        XCTAssertEqual(recovered.status, .needsReview)
+        XCTAssertEqual(recovered.attemptCount, AlertIngestionService.automaticAttemptLimit)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testReadyRecoveryDefersFrozenWorkAndOnlyOwnerRetryCreatesChild() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
+        )
+        PrimaryCurrencySettings.confirm("USD")
+
+        _ = await service.processPending()
+
+        let parent = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        XCTAssertEqual(parent.id, snapshot.operationID)
+        XCTAssertEqual(parent.state, .ready)
+        XCTAssertNil(parent.ownerToken)
+        XCTAssertNil(parent.settledAt)
+        XCTAssertEqual(parent.configurationJSON, snapshot.configurationJSON)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<InboxAlert>()).first?.lastErrorCode,
+                       "saved_operation_requires_explicit_retry")
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SmsReviewCase>()).isEmpty)
+        let replayCalls = await probe.callCount
+        XCTAssertEqual(replayCalls, 0)
+
+        let retried = try await service.retry(alertID: queued.alertID)
+
+        XCTAssertEqual(retried.disposition, .needsReview)
+        let fresh = ModelContext(database.container)
+        let operations = try fresh.fetch(FetchDescriptor<SmsProcessingOperation>())
+        XCTAssertEqual(operations.count, 2)
+        let child = try XCTUnwrap(operations.first { $0.parentOperationID == parent.id })
+        XCTAssertEqual(child.stableEventID, parent.stableEventID)
+        XCTAssertEqual(parent.configurationJSON, snapshot.configurationJSON)
+        let document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(child.configurationJSON.utf8)) as? [String: Any]
+        )
+        let currency = try XCTUnwrap(document["currency_context"] as? [String: Any])
+        XCTAssertEqual(currency["primary_currency"] as? String, "USD")
+        let store = SmsProcessingStore(modelContainer: database.container)
+        _ = try await store.recoverExpiredOperations(now: .now.addingTimeInterval(300))
+        XCTAssertEqual(try ModelContext(database.container).fetch(FetchDescriptor<SmsReviewCase>()).count, 1)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testLiveDurableClaimBlocksRecoveryAndOwnerRetryAcrossContexts() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
+        )
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let claim = try await store.claim(operationID: snapshot.operationID)
+
+        let completed = await service.processPending()
+        let receipt = try await service.retry(alertID: queued.alertID)
+
+        XCTAssertEqual(completed, 0)
+        XCTAssertEqual(receipt.disposition, .alreadyProcessing)
+        let fresh = ModelContext(database.container)
+        let operations = try fresh.fetch(FetchDescriptor<SmsProcessingOperation>())
+        XCTAssertEqual(operations.count, 1)
+        XCTAssertEqual(operations.first?.ownerToken, claim.ownerToken)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<InboxAlert>()).first?.attemptCount, 0)
+        XCTAssertTrue(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).isEmpty)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testExpiredWorkUsesExistingRecoveryWithoutAnotherExtraction() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
+        )
+        let store = SmsProcessingStore(modelContainer: database.container)
+        _ = try await store.claim(operationID: snapshot.operationID, now: .now.addingTimeInterval(-300))
+
+        _ = await service.processPending()
+        let beforeRecovery = try await service.retry(alertID: queued.alertID)
+        XCTAssertEqual(beforeRecovery.disposition, .processingIncomplete)
+        let recoveredIDs = try await store.recoverExpiredOperations()
+        XCTAssertEqual(recoveredIDs.count, 1)
+        _ = await service.processPending(includeNeedsReview: true)
+
+        let fresh = ModelContext(database.container)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), recoveredIDs)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<InboxAlert>()).first?.status, .needsReview)
+        XCTAssertTrue(try fresh.fetch(FetchDescriptor<Transaction>()).isEmpty)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testOwnerRetryWithoutParentLinksLatestReviewAndRetainsOneCase() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        _ = await service.processPending()
+        let parent = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        let reviewID = try XCTUnwrap(context.fetch(FetchDescriptor<SmsReviewCase>()).first?.id)
+
+        _ = await service.processPending(includeNeedsReview: true)
+        let receipt = try await service.retry(alertID: queued.alertID)
+
+        XCTAssertEqual(receipt.disposition, .needsReview)
+        let fresh = ModelContext(database.container)
+        let child = try XCTUnwrap(fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
+            $0.parentOperationID == parent.id
+        })
+        XCTAssertEqual(child.stableEventID, parent.stableEventID)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 2)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), [reviewID])
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testAdmissionLockIsNonblockingAndReleasedAfterFailure() throws {
+        let database = try AppDatabase(inMemory: true)
+        XCTAssertThrowsError(try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in
+            try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in }
+        }) { error in
+            XCTAssertEqual(error as? SmsProcessingStoreError, .admissionBusy)
+        }
+        XCTAssertNoThrow(try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in })
+    }
+
+    func testFileLockContentionReturnsBusyWithoutCreatingOperationOrReview() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("invented.store")
+        let database = try AppDatabase(storeURL: storeURL)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        let lockURL = storeURL.appendingPathExtension("admission-lock")
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer {
+            _ = flock(descriptor, LOCK_UN)
+            _ = close(descriptor)
+        }
+        XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+
+        let receipt = try await service.retry(alertID: queued.alertID)
+
+        XCTAssertEqual(receipt.disposition, .alreadyProcessing)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SmsProcessingOperation>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SmsReviewCase>()).isEmpty)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<InboxAlert>()).first?.attemptCount, 0)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testUncommittedEvidenceConflictCannotOverwriteDurableAlertOrStartModel() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        context.autosaveEnabled = false
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        _ = try enqueueAdmissionFixture(service)
+        let alert = try XCTUnwrap(context.fetch(FetchDescriptor<InboxAlert>()).first)
+        let originalBody = alert.rawBody
+        alert.rawBody = "Uncommitted, conflicting invented evidence."
+        defer { context.rollback() }
+
+        _ = await service.processPending()
+
+        let fresh = ModelContext(database.container)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<InboxAlert>()).first?.rawBody, originalBody)
+        XCTAssertTrue(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).isEmpty)
+        XCTAssertTrue(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).isEmpty)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testUnavailableModelOutcomeIsReusedUntilExplicitOwnerRetry() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let unavailable = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: false
+        )
+        let queued = try enqueueAdmissionFixture(unavailable)
+        _ = await unavailable.processPending()
+        let parentID = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first?.id)
+        let available = AlertIngestionService(
+            context: ModelContext(database.container),
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+
+        _ = await available.processPending(includeNeedsReview: true)
+
+        let replayCalls = await probe.callCount
+        XCTAssertEqual(replayCalls, 0)
+        XCTAssertEqual(try ModelContext(database.container).fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
+        let receipt = try await available.retry(alertID: queued.alertID)
+        XCTAssertEqual(receipt.disposition, .needsReview)
+        let fresh = ModelContext(database.container)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 2)
+        XCTAssertNotNil(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
+            $0.parentOperationID == parentID
+        })
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).count, 1)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testProcessingSaveFailureKeepsEvidenceAndCanRecoverWithoutDuplicateOperation() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        var saves = 0
+        let service = AlertIngestionService(
+            context: context,
+            contextSaver: { context in
+                saves += 1
+                if saves == 2 { throw AlertIngestionError.persistenceFailed }
+                try context.save()
+            },
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+
+        _ = await service.processPending()
+
+        let failed = ModelContext(database.container)
+        XCTAssertEqual(try failed.fetch(FetchDescriptor<InboxAlert>()).first?.id, queued.alertID)
+        XCTAssertFalse(try XCTUnwrap(failed.fetch(FetchDescriptor<InboxAlert>()).first?.rawBody).isEmpty)
+        XCTAssertTrue(try failed.fetch(FetchDescriptor<SmsProcessingOperation>()).isEmpty)
+        let failedCalls = await probe.callCount
+        XCTAssertEqual(failedCalls, 0)
+        _ = await service.processPending()
+        let fresh = ModelContext(database.container)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
+        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).count, 1)
+        let recoveredCalls = await probe.callCount
+        XCTAssertEqual(recoveredCalls, 1)
+    }
+
+    func testOwnerRetryOfInterruptedUnownedWorkCreatesLinkedChild() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let queued = try enqueueAdmissionFixture(service)
+        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
+        )
+        let parent = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        parent.state = .interrupted
+        try context.save()
+
+        _ = await service.processPending()
+        let replayCalls = await probe.callCount
+        XCTAssertEqual(replayCalls, 0)
+        let receipt = try await service.retry(alertID: queued.alertID)
+
+        XCTAssertEqual(receipt.disposition, .needsReview)
+        let fresh = ModelContext(database.container)
+        let child = try XCTUnwrap(fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
+            $0.parentOperationID == snapshot.operationID
+        })
+        XCTAssertEqual(child.stableEventID, snapshot.stableEventID)
+        let store = SmsProcessingStore(modelContainer: database.container)
+        _ = try await store.recoverExpiredOperations(now: .now.addingTimeInterval(300))
+        XCTAssertEqual(try ModelContext(database.container).fetch(FetchDescriptor<SmsReviewCase>()).count, 1)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testOwnerRetryCannotLinkOperationFromAnotherSource() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+        let first = try enqueueAdmissionFixture(service)
+        let second = try enqueueAdmissionFixture(service)
+        XCTAssertNotEqual(first.alertID, second.alertID)
+        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            sourceAlertID: first.alertID, trigger: "test", primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
+        )
+
+        let receipt = try await service.retry(
+            alertID: second.alertID, parentOperationID: snapshot.operationID
+        )
+
+        XCTAssertEqual(receipt.disposition, .processingIncomplete)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<InboxAlert>()).count, 2)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SmsReviewCase>()).isEmpty)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    private func enqueueAdmissionFixture(_ service: AlertIngestionService) throws -> IngestionReceipt {
+        try service.enqueue(
+            body: "INR 500.00 was debited from account **0000 at Demo Store.",
+            sender: "INVENTED", receivedAt: TestFixtures.receivedAt,
+            sourceApplication: "Invented connector", origin: .manual
+        )
     }
 
     private func usePrimaryCurrency(_ code: String?) -> () -> Void {

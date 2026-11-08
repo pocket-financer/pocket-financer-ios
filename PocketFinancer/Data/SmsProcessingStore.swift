@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SwiftData
 
@@ -12,6 +13,8 @@ enum SmsProcessingStoreError: Error, Equatable, Sendable {
     case revisionConflict
     case invalidCommand
     case saveFailed
+    case admissionBusy
+    case sourceConflict
 }
 
 struct SmsOperationClaim: Equatable, Sendable {
@@ -24,6 +27,86 @@ struct SmsOperationClaim: Equatable, Sendable {
 @ModelActor
 actor SmsProcessingStore {
     static let claimLease: TimeInterval = 120
+
+    nonisolated private static let admissionMutex = NSLock()
+
+    /// Serializes source operation selection, creation and the initial claim. Never
+    /// hold this lock across an await or inference. Uniqueness alone is an upsert,
+    /// not a compare-and-insert guard in SwiftData.
+    nonisolated static func withAdmissionLock<T>(
+        container: ModelContainer,
+        _ body: (ModelContext) throws -> T
+    ) throws -> T {
+        guard admissionMutex.try() else { throw SmsProcessingStoreError.admissionBusy }
+        defer { admissionMutex.unlock() }
+        guard container.configurations.count == 1,
+            let configuration = container.configurations.first
+        else { throw SmsProcessingStoreError.configurationMismatch }
+
+        var descriptor: Int32 = -1
+        if !configuration.isStoredInMemoryOnly {
+            let lockURL = configuration.url.appendingPathExtension("admission-lock")
+            descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+            guard descriptor >= 0 else { throw SmsProcessingStoreError.saveFailed }
+        }
+        defer {
+            if descriptor >= 0 {
+                _ = flock(descriptor, LOCK_UN)
+                _ = close(descriptor)
+            }
+        }
+        if descriptor >= 0 {
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                throw SmsProcessingStoreError.admissionBusy
+            }
+            let lockURL = configuration.url.appendingPathExtension("admission-lock")
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: lockURL.path
+            )
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var protectedURL = lockURL
+            try protectedURL.setResourceValues(values)
+        }
+        let freshContext = ModelContext(container)
+        freshContext.autosaveEnabled = false
+        return try body(freshContext)
+    }
+
+    /// Called only inside withAdmissionLock, before exposing newly created work.
+    /// A crash before this save leaves a ready snapshot for visible owner recovery.
+    nonisolated static func claimForAdmission(
+        operationID: UUID,
+        context: ModelContext,
+        now: Date = .now
+    ) throws -> SmsOperationClaim {
+        let targetID = operationID
+        guard let operation = try context.fetch(
+            FetchDescriptor<SmsProcessingOperation>(predicate: #Predicate { $0.id == targetID })
+        ).first else { throw SmsProcessingStoreError.operationNotFound }
+        guard operation.state == .ready, operation.settledAt == nil,
+            operation.ownerToken == nil
+        else { throw SmsProcessingStoreError.stateConflict }
+        let token = UUID()
+        let expiresAt = now.addingTimeInterval(claimLease)
+        operation.ownerGeneration += 1
+        operation.ownerToken = token
+        operation.claimExpiresAt = expiresAt
+        operation.state = .claimed
+        operation.transitionSequence += 1
+        operation.updatedAt = now
+        do { try context.save() } catch {
+            context.rollback()
+            throw SmsProcessingStoreError.saveFailed
+        }
+        return SmsOperationClaim(
+            operationID: operationID,
+            ownerToken: token,
+            generation: operation.ownerGeneration,
+            expiresAt: expiresAt
+        )
+    }
 
     func operation(id: UUID) throws -> SmsProcessingOperation? {
         let operationID = id
@@ -289,8 +372,16 @@ actor SmsProcessingStore {
                 sortBy: [SortDescriptor(\.createdAt)]
             )
         )
+        let retriedOperationIDs = Set(operations.compactMap(\.parentOperationID))
         var reviewIDs: [UUID] = []
         for operation in operations where operation.settledAt == nil && operation.updatedAt <= cutoff {
+            // An explicit retry of unowned ready/interrupted work owns recovery.
+            // Do not create another Review for its preserved, superseded parent.
+            if [.ready, .interrupted, .retryWait].contains(operation.state)
+                && operation.ownerToken == nil && retriedOperationIDs.contains(operation.id)
+            {
+                continue
+            }
             let hasLiveLease =
                 operation.ownerToken != nil
                 && operation.claimExpiresAt.map { $0 > now } == true
