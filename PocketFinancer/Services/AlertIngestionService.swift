@@ -478,11 +478,14 @@ final class AlertIngestionService {
         isOwnerRetry: Bool
     ) throws -> PreparedProcessing {
         let sourceID = alert.id
-        guard let durableAlert = try admissionContext.fetch(
-            FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == sourceID })
-        ).first else { throw SmsProcessingStoreError.sourceNotFound }
+        guard
+            let durableAlert = try admissionContext.fetch(
+                FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == sourceID })
+            ).first
+        else { throw SmsProcessingStoreError.sourceNotFound }
         // A stale context must not process or write back evidence replaced elsewhere.
-        guard durableAlert.rawBody.utf8.elementsEqual(alert.rawBody.utf8),
+        guard
+            durableAlert.rawBody.utf8.elementsEqual(alert.rawBody.utf8),
             durableAlert.sender.utf8.elementsEqual(alert.sender.utf8),
             durableAlert.receivedAt == alert.receivedAt,
             durableAlert.sourceIdentity == alert.sourceIdentity,

@@ -82,9 +82,11 @@ actor SmsProcessingStore {
         now: Date = .now
     ) throws -> SmsOperationClaim {
         let targetID = operationID
-        guard let operation = try context.fetch(
-            FetchDescriptor<SmsProcessingOperation>(predicate: #Predicate { $0.id == targetID })
-        ).first else { throw SmsProcessingStoreError.operationNotFound }
+        guard
+            let operation = try context.fetch(
+                FetchDescriptor<SmsProcessingOperation>(predicate: #Predicate { $0.id == targetID })
+            ).first
+        else { throw SmsProcessingStoreError.operationNotFound }
         guard operation.state == .ready, operation.settledAt == nil,
             operation.ownerToken == nil
         else { throw SmsProcessingStoreError.stateConflict }

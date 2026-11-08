@@ -576,7 +576,8 @@ final class AlertIngestionServiceTests: XCTestCase {
 
         let fresh = ModelContext(database.container)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
-        XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first?.configurationJSON, configuration)
+        XCTAssertEqual(
+            try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first?.configurationJSON, configuration)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), [reviewID])
         let recovered = try XCTUnwrap(fresh.fetch(FetchDescriptor<InboxAlert>()).first)
         XCTAssertEqual(recovered.id, queued.alertID)
@@ -612,8 +613,9 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertNil(parent.ownerToken)
         XCTAssertNil(parent.settledAt)
         XCTAssertEqual(parent.configurationJSON, snapshot.configurationJSON)
-        XCTAssertEqual(try context.fetch(FetchDescriptor<InboxAlert>()).first?.lastErrorCode,
-                       "saved_operation_requires_explicit_retry")
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<InboxAlert>()).first?.lastErrorCode,
+            "saved_operation_requires_explicit_retry")
         XCTAssertTrue(try context.fetch(FetchDescriptor<SmsReviewCase>()).isEmpty)
         let replayCalls = await probe.callCount
         XCTAssertEqual(replayCalls, 0)
@@ -729,9 +731,10 @@ final class AlertIngestionServiceTests: XCTestCase {
 
         XCTAssertEqual(receipt.disposition, .needsReview)
         let fresh = ModelContext(database.container)
-        let child = try XCTUnwrap(fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
-            $0.parentOperationID == parent.id
-        })
+        let child = try XCTUnwrap(
+            fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
+                $0.parentOperationID == parent.id
+            })
         XCTAssertEqual(child.stableEventID, parent.stableEventID)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 2)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), [reviewID])
@@ -741,9 +744,11 @@ final class AlertIngestionServiceTests: XCTestCase {
 
     func testAdmissionLockIsNonblockingAndReleasedAfterFailure() throws {
         let database = try AppDatabase(inMemory: true)
-        XCTAssertThrowsError(try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in
-            try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in }
-        }) { error in
+        XCTAssertThrowsError(
+            try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in
+                try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in }
+            }
+        ) { error in
             XCTAssertEqual(error as? SmsProcessingStoreError, .admissionBusy)
         }
         XCTAssertNoThrow(try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in })
@@ -841,9 +846,10 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertEqual(receipt.disposition, .needsReview)
         let fresh = ModelContext(database.container)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 2)
-        XCTAssertNotNil(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
-            $0.parentOperationID == parentID
-        })
+        XCTAssertNotNil(
+            try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
+                $0.parentOperationID == parentID
+            })
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).count, 1)
         let calls = await probe.callCount
         XCTAssertEqual(calls, 1)
@@ -911,9 +917,10 @@ final class AlertIngestionServiceTests: XCTestCase {
 
         XCTAssertEqual(receipt.disposition, .needsReview)
         let fresh = ModelContext(database.container)
-        let child = try XCTUnwrap(fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
-            $0.parentOperationID == snapshot.operationID
-        })
+        let child = try XCTUnwrap(
+            fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).first {
+                $0.parentOperationID == snapshot.operationID
+            })
         XCTAssertEqual(child.stableEventID, snapshot.stableEventID)
         let store = SmsProcessingStore(modelContainer: database.container)
         _ = try await store.recoverExpiredOperations(now: .now.addingTimeInterval(300))
