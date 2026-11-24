@@ -169,7 +169,7 @@ struct AlertProcessingDetailView: View {
                 LabeledContent("Pipeline contract", value: operation.contractReleaseID)
                 LabeledContent("Operation state", value: operation.stateRawValue)
                 if let persistenceDecision {
-                    LabeledContent("Gate result", value: persistenceDecision.result)
+                    LabeledContent("Gate result", value: persistenceDecision.resultRawValue)
                     LabeledContent("Primary reason", value: persistenceDecision.primaryReason)
                 }
                 if !traceEvents.isEmpty {

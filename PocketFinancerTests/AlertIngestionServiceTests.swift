@@ -40,7 +40,7 @@ private struct GroundedIngestionExtractor: FoundationSmsExtracting {
         )
         let source = try XCTUnwrap(request["message"] as? String)
         let document: [String: Any]
-        if source.contains("OTP") {
+        if source.contains("OTP") || source.contains("statement summary") {
             document = ["decision": "none"]
         } else {
             document = [
@@ -275,7 +275,7 @@ final class AlertIngestionServiceTests: XCTestCase {
         )
 
         let receipt = try await service.ingest(
-            body: "Your card balance statement summary for INR 100.00 OTP free view is ready.",
+            body: "Your card statement summary for INR 100.00 is ready to view.",
             sender: "BANK",
             receivedAt: TestFixtures.receivedAt,
             sourceApplication: "Messages",

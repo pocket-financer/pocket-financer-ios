@@ -195,68 +195,108 @@ final class SmsExtractorValidatorTests: XCTestCase {
         )
     }
 
+    private static func scalarSpan(start: Int, end: Int, text: String) -> [String: Any] {
+        ["start_scalar": start, "end_scalar": end, "text": text]
+    }
+
+    private static func postedModelOutput(
+        amountValue: String,
+        amountSpan: [String: Any],
+        directionValue: String,
+        directionSpan: [String: Any],
+        accountReference: String,
+        accountSpan: [String: Any],
+        counterpartyValue: String? = nil,
+        counterpartySpan: [String: Any]? = nil
+    ) -> [String: Any] {
+        let amount: [String: Any] = ["value": amountValue, "currency": "INR", "evidence": amountSpan]
+        let direction: [String: Any] = ["value": directionValue, "evidence": directionSpan]
+        let account: [String: Any] = ["reference": accountReference, "evidence": accountSpan]
+        var counterparty: Any = NSNull()
+        if let counterpartyValue, let counterpartySpan {
+            let entry: [String: Any] = ["value": counterpartyValue, "evidence": counterpartySpan]
+            counterparty = entry
+        }
+        return [
+            "decision": "posted",
+            "amount": amount,
+            "direction": direction,
+            "account": account,
+            "counterparty": counterparty,
+        ]
+    }
+
+    private static func expectedPosted(
+        minorUnits: Int,
+        direction: String,
+        accountReference: String,
+        counterparty: String? = nil
+    ) -> [String: Any] {
+        var counterpartyEntry: Any = NSNull()
+        if let counterparty {
+            counterpartyEntry = counterparty
+        }
+        return [
+            "decision": "posted",
+            "amount_minor_units": minorUnits,
+            "amount_currency": "INR",
+            "direction": direction,
+            "account_reference": accountReference,
+            "counterparty": counterpartyEntry,
+        ]
+    }
+
     private static func sanitizedVectors() throws -> [[String: Any]] {
-        let vectors: [[String: Any]] = [
+        let emojiBody = "Alert \u{1F4B3}: INR 1,250.00 debited from a/c XX1234 at Caf\u{00E9}."
+        let emojiOutput = postedModelOutput(
+            amountValue: "1250.00",
+            amountSpan: scalarSpan(start: 9, end: 21, text: "INR 1,250.00"),
+            directionValue: "debit",
+            directionSpan: scalarSpan(start: 22, end: 29, text: "debited"),
+            accountReference: "XX1234",
+            accountSpan: scalarSpan(start: 39, end: 45, text: "XX1234"),
+            counterpartyValue: "Caf\u{00E9}",
+            counterpartySpan: scalarSpan(start: 49, end: 53, text: "Caf\u{00E9}")
+        )
+        let emojiExpected = expectedPosted(
+            minorUnits: 125_000,
+            direction: "debit",
+            accountReference: "1234",
+            counterparty: "caf\u{00E9}"
+        )
+
+        let combiningBody = "Cafe\u{0301} INR 42.00 credited to account XX4321."
+        let combiningOutput = postedModelOutput(
+            amountValue: "42.00",
+            amountSpan: scalarSpan(start: 6, end: 15, text: "INR 42.00"),
+            directionValue: "credit",
+            directionSpan: scalarSpan(start: 16, end: 24, text: "credited"),
+            accountReference: "XX4321",
+            accountSpan: scalarSpan(start: 36, end: 42, text: "XX4321")
+        )
+        let combiningExpected = expectedPosted(minorUnits: 4200, direction: "credit", accountReference: "4321")
+
+        let mismatchedOutput = postedModelOutput(
+            amountValue: "1250.00",
+            amountSpan: scalarSpan(start: 0, end: 12, text: "INR 1,250.00"),
+            directionValue: "debit",
+            directionSpan: scalarSpan(start: 13, end: 20, text: "debited"),
+            accountReference: "XX0000",
+            accountSpan: scalarSpan(start: 34, end: 40, text: "XX0000")
+        )
+
+        return [
             [
                 "id": "unicode_emoji_zero_evidence",
-                "sms_body": "Alert \u{1F4B3}: INR 1,250.00 debited from a/c XX1234 at Caf\u{00E9}.",
-                "model_output": [
-                    "decision": "posted",
-                    "amount": [
-                        "value": "1250.00",
-                        "currency": "INR",
-                        "evidence": ["start_scalar": 9, "end_scalar": 21, "text": "INR 1,250.00"],
-                    ],
-                    "direction": [
-                        "value": "debit",
-                        "evidence": ["start_scalar": 22, "end_scalar": 29, "text": "debited"],
-                    ],
-                    "account": [
-                        "reference": "XX1234",
-                        "evidence": ["start_scalar": 39, "end_scalar": 45, "text": "XX1234"],
-                    ],
-                    "counterparty": [
-                        "value": "Caf\u{00E9}",
-                        "evidence": ["start_scalar": 49, "end_scalar": 53, "text": "Caf\u{00E9}"],
-                    ],
-                ],
-                "expected": [
-                    "decision": "posted",
-                    "amount_minor_units": 125_000,
-                    "amount_currency": "INR",
-                    "direction": "debit",
-                    "account_reference": "1234",
-                    "counterparty": "caf\u{00E9}",
-                ],
+                "sms_body": emojiBody,
+                "model_output": emojiOutput,
+                "expected": emojiExpected,
             ],
             [
                 "id": "combining_mark_conflicting_advice",
-                "sms_body": "Cafe\u{0301} INR 42.00 credited to account XX4321.",
-                "model_output": [
-                    "decision": "posted",
-                    "amount": [
-                        "value": "42.00",
-                        "currency": "INR",
-                        "evidence": ["start_scalar": 6, "end_scalar": 15, "text": "INR 42.00"],
-                    ],
-                    "direction": [
-                        "value": "credit",
-                        "evidence": ["start_scalar": 16, "end_scalar": 24, "text": "credited"],
-                    ],
-                    "account": [
-                        "reference": "XX4321",
-                        "evidence": ["start_scalar": 36, "end_scalar": 42, "text": "XX4321"],
-                    ],
-                    "counterparty": NSNull(),
-                ],
-                "expected": [
-                    "decision": "posted",
-                    "amount_minor_units": 4200,
-                    "amount_currency": "INR",
-                    "direction": "credit",
-                    "account_reference": "4321",
-                    "counterparty": NSNull(),
-                ],
+                "sms_body": combiningBody,
+                "model_output": combiningOutput,
+                "expected": combiningExpected,
             ],
             [
                 "id": "sanitized_negative",
@@ -273,26 +313,9 @@ final class SmsExtractorValidatorTests: XCTestCase {
             [
                 "id": "adversarial_mismatched_span",
                 "sms_body": "INR 1,250.00 debited from account XX9999.",
-                "model_output": [
-                    "decision": "posted",
-                    "amount": [
-                        "value": "1250.00",
-                        "currency": "INR",
-                        "evidence": ["start_scalar": 0, "end_scalar": 12, "text": "INR 1,250.00"],
-                    ],
-                    "direction": [
-                        "value": "debit",
-                        "evidence": ["start_scalar": 13, "end_scalar": 20, "text": "debited"],
-                    ],
-                    "account": [
-                        "reference": "XX0000",
-                        "evidence": ["start_scalar": 34, "end_scalar": 40, "text": "XX0000"],
-                    ],
-                    "counterparty": NSNull(),
-                ],
+                "model_output": mismatchedOutput,
                 "expected_reason": "extractor_evidence_mismatch",
             ],
         ]
-        return vectors
     }
 }

@@ -195,7 +195,7 @@ final class NativeSmsProcessingTests: XCTestCase {
         )
         XCTAssertEqual(decision.resultRawValue, "eligible")
         XCTAssertEqual(decision.primaryReason, "persistence_all_gates_passed")
-        XCTAssertEqual(decision.rolloutMode, "automatic")
+        XCTAssertEqual(decision.rolloutModeRawValue, "automatic")
     }
 
     func testCoordinatorRoutesFiveMinuteDuplicateToReview() async throws {
