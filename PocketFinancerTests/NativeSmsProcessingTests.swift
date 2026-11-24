@@ -91,7 +91,7 @@ final class NativeSmsProcessingTests: XCTestCase {
         defaults.removeObject(forKey: PrimaryCurrencySettings.confirmationKey)
 
         XCTAssertNil(PrimaryCurrencySettings.confirmedCode)
-        PrimaryCurrencySettings.set("INR")
+        defaults.set("INR", forKey: PrimaryCurrencySettings.key)
         XCTAssertNil(PrimaryCurrencySettings.confirmedCode)
         PrimaryCurrencySettings.confirm("USD")
         XCTAssertEqual(PrimaryCurrencySettings.confirmedCode, "USD")

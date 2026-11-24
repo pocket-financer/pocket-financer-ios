@@ -85,7 +85,6 @@ private struct GroundedIngestionExtractor: FoundationSmsExtracting {
     ) throws -> [String: Any] {
         for text in alternatives {
             if let range = source.range(of: text) {
-                let scalars = source.unicodeScalars
                 let start = source[..<range.lowerBound].unicodeScalars.count
                 let end = start + source[range].unicodeScalars.count
                 return value.merging([
