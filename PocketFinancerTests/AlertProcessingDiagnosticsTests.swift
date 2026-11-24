@@ -4,56 +4,23 @@ import XCTest
 
 final class AlertProcessingDiagnosticsTests: XCTestCase {
     @MainActor
-    func testFoundationModelContractBuildsSenderIndependentPrompt() {
-        let body = "Rs.500.00 debited from a/c XX0000"
-        let prompt = FoundationModelExtractionContract.requestPrompt(
-            body: body,
-            receivedAt: TestFixtures.receivedAt
-        )
+    func testExtractorPromptAndLocaleMatchUnifiedContract() throws {
+        let prompt = try SmsContractAssets.extractorPrompt()
 
-        XCTAssertTrue(prompt.contains(body))
-        XCTAssertTrue(prompt.contains("<alert>"))
-        XCTAssertTrue(prompt.contains("</alert>"))
-        XCTAssertFalse(prompt.localizedCaseInsensitiveContains("sender"))
-        XCTAssertEqual(
-            FoundationModelExtractionContract.modelProcessingLocaleIdentifier,
-            "en-US"
-        )
-        XCTAssertEqual(
-            FoundationModelExtractionContract.timeoutDescription,
-            "Cancellation requested after 60 seconds"
-        )
+        XCTAssertTrue(prompt.contains("pocketfinancer.apple-fm-extractor-prompt/1"))
+        XCTAssertTrue(prompt.contains(#""posted""#))
+        XCTAssertEqual(ModelDiagnostics.modelProcessingLocaleIdentifier, "en-US")
     }
 
     @MainActor
-    func testFilterTraceMakesSenderIndependenceAndEveryPassedStageVisible() {
-        let first = AlertFilter().trace(
-            sender: "AX-HDFCBK",
-            body: TestFixtures.validBody
-        )
-        let second = AlertFilter().trace(
-            sender: "+919999999999",
-            body: TestFixtures.validBody
-        )
+    func testPrefilterDistinguishesTransactionsAndOtpRegardlessOfSender() {
+        let valid = SmsPrefilter.evaluate(TestFixtures.validBody)
+        let otp = SmsPrefilter.evaluate("Your OTP for card transaction is 482910. Do not share.")
 
-        XCTAssertFalse(first.senderWasUsed)
-        XCTAssertEqual(first, second)
-        XCTAssertTrue(first.result.isEligible)
-        XCTAssertEqual(first.stages.map(\.state), Array(repeating: .passed, count: 8))
-    }
-
-    @MainActor
-    func testFilterTraceShowsFailureAndSkippedStagesInPipelineOrder() {
-        let trace = AlertFilter().trace(
-            sender: "anything",
-            body: "Offer on Card XX1234: get Rs.100 cashback"
-        )
-
-        XCTAssertEqual(trace.result.rejectionCode, .promotion)
-        XCTAssertEqual(
-            trace.stages.map(\.state),
-            [.passed, .passed, .passed, .passed, .failed, .notRun, .notRun, .notRun]
-        )
+        XCTAssertEqual(valid.decision, .pass)
+        XCTAssertEqual(valid.reason, .eligible)
+        XCTAssertEqual(otp.decision, .exclude)
+        XCTAssertEqual(otp.reason, .otpVerification)
     }
 
     @MainActor
@@ -63,8 +30,21 @@ final class AlertProcessingDiagnosticsTests: XCTestCase {
             ProcessingCodePresentation(
                 title: "Attempt timed out",
                 detail:
-                    "Pocket Financer requested cancellation after 60 seconds. Apple's model may take additional time to release the local request."
+                    "Pocket Financer requested cancellation after 60 seconds. "
+                    + "Apple's model may take additional time to release the local request."
             )
+        )
+        XCTAssertEqual(
+            AlertProcessingDiagnostics.presentation(for: "tombstoned_excluded").title,
+            "Excluded before model invocation"
+        )
+        XCTAssertEqual(
+            AlertProcessingDiagnostics.presentation(for: "tombstoned_none").title,
+            "No completed transaction"
+        )
+        XCTAssertEqual(
+            AlertProcessingDiagnostics.presentation(for: "persistence_all_gates_passed").title,
+            "Saved automatically"
         )
         XCTAssertEqual(AlertProcessingDiagnostics.durationText(0.4), "Under 1 second")
         XCTAssertEqual(AlertProcessingDiagnostics.durationText(12.34), "12.3 seconds")

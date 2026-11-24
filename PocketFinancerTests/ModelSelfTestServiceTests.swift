@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class ModelSelfTestServiceTests: XCTestCase {
-    func testGroundedExtractorPassesThroughRealShadowCoordinator() async throws {
+    func testGroundedExtractorPassesThroughRealCoordinatorAndKeepsLedgerEmpty() async throws {
         let receivedAt = Date(timeIntervalSince1970: 1_785_955_200.125)
 
         let result = await ModelSelfTestService.run(
@@ -45,22 +45,33 @@ final class ModelSelfTestServiceTests: XCTestCase {
         XCTAssertEqual(result.settlement, "retained_for_review")
         XCTAssertEqual(result.outputCompletion, "failed")
         XCTAssertNil(result.exactOutput)
-        XCTAssertEqual(result.failure?.safeCode, "runtime_unavailable")
+        XCTAssertEqual(result.failure?.safeCode, "model_modelNotReady")
         XCTAssertEqual(result.failure?.isRetryable, true)
         XCTAssertTrue(result.summary.localizedCaseInsensitiveContains("did not produce"))
     }
 
     func testMismatchedEvidenceOutputFailsClosed() async {
-        let result = await ModelSelfTestService.run(
+        let mismatchedEvidence = await ModelSelfTestService.run(
             extractor: MismatchedEvidenceSelfTestExtractor(),
             extractorEligibilityOverride: true,
             receivedAt: TestFixtures.receivedAt
         )
 
-        XCTAssertFalse(result.passed)
-        XCTAssertEqual(result.settlement, "retained_for_review")
-        XCTAssertEqual(result.failure?.safeCode, "extractor_evidence_mismatch")
-        XCTAssertEqual(result.failure?.isRetryable, false)
+        XCTAssertFalse(mismatchedEvidence.passed)
+        XCTAssertEqual(mismatchedEvidence.settlement, "retained_for_review")
+        XCTAssertEqual(mismatchedEvidence.failure?.safeCode, "extractor_evidence_mismatch")
+        XCTAssertEqual(mismatchedEvidence.failure?.isRetryable, false)
+
+        let invalidReference = await ModelSelfTestService.run(
+            extractor: InvalidAccountReferenceSelfTestExtractor(),
+            extractorEligibilityOverride: true,
+            receivedAt: TestFixtures.receivedAt
+        )
+
+        XCTAssertFalse(invalidReference.passed)
+        XCTAssertEqual(invalidReference.settlement, "retained_for_review")
+        XCTAssertEqual(invalidReference.failure?.safeCode, "extractor_account_reference_invalid")
+        XCTAssertEqual(invalidReference.failure?.isRetryable, false)
     }
 }
 
@@ -69,7 +80,7 @@ private struct GroundedSelfTestExtractor: FoundationSmsExtracting {
         let rawOutput = try strictPostedOutput()
         return DirectSelectorResponse(
             rawOutput: rawOutput,
-            runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
+            runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
             requestJSON: requestJSON,
             completion: "complete"
         )
@@ -89,14 +100,39 @@ private struct MismatchedEvidenceSelfTestExtractor: FoundationSmsExtracting {
                 as? [String: Any]
         )
         var account = try XCTUnwrap(document["account"] as? [String: Any])
-        account["reference"] = "XX9999"
+        var evidence = try XCTUnwrap(account["evidence"] as? [String: Any])
+        evidence["text"] = "XX9999"
+        account["evidence"] = evidence
         document["account"] = account
         let data = try JSONSerialization.data(
-            withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes]
+            withJSONObject: document,
+            options: [.sortedKeys, .withoutEscapingSlashes]
         )
         return DirectSelectorResponse(
             rawOutput: String(decoding: data, as: UTF8.self),
-            runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
+            runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
+            requestJSON: requestJSON,
+            completion: "complete"
+        )
+    }
+}
+
+private struct InvalidAccountReferenceSelfTestExtractor: FoundationSmsExtracting {
+    func extract(requestJSON: String) async throws -> DirectSelectorResponse {
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data((try strictPostedOutput()).utf8))
+                as? [String: Any]
+        )
+        var account = try XCTUnwrap(document["account"] as? [String: Any])
+        account["reference"] = "XX9999"
+        document["account"] = account
+        let data = try JSONSerialization.data(
+            withJSONObject: document,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        return DirectSelectorResponse(
+            rawOutput: String(decoding: data, as: UTF8.self),
+            runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
             requestJSON: requestJSON,
             completion: "complete"
         )
@@ -121,7 +157,8 @@ private func strictPostedOutput() throws -> String {
         "counterparty": try field("Demo Store", value: ["value": "Demo Store"]),
     ]
     let data = try JSONSerialization.data(
-        withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes]
+        withJSONObject: document,
+        options: [.sortedKeys, .withoutEscapingSlashes]
     )
     return String(decoding: data, as: UTF8.self)
 }

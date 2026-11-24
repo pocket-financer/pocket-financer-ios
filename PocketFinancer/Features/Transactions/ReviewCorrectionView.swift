@@ -19,7 +19,7 @@ struct ReviewCorrectionView: View {
     @State private var newAccountBank = ""
     @State private var newAccountKind = AccountKind.account
     @State private var newAccountSuffix = ""
-    @State private var groundedProposal: ReconstructedSmsTransaction?
+    @State private var groundedProposal: LegacyV2Proposal?
     @State private var groundedProposalAccountID: UUID?
     @State private var v4OriginalProposal: SmsReviewProposal?
     @State private var v4Proposal: SmsReviewProposal?
@@ -455,7 +455,9 @@ struct ReviewCorrectionView: View {
                 predicate: #Predicate { $0.operationID == operationID }
             )
         ).first
-        if let stored, stored.contractVersion == "pocketfinancer.processing-result/3" {
+        if let stored, stored.contractVersion == "pocketfinancer.processing-result/3",
+            stored.recognitionDecisionRawValue == "posted"
+        {
             guard let alert,
                 let proposal = SmsReviewProjection.parse(
                     resultJSON: stored.semanticResultJSON,
@@ -473,7 +475,7 @@ struct ReviewCorrectionView: View {
         } else if let stored,
             let resultJSON = stored.semanticResultJSON,
             let result = try? JSONDecoder().decode(
-                ReconstructedSmsTransaction.self,
+                LegacyV2Proposal.self,
                 from: Data(resultJSON.utf8)
             )
         {
@@ -575,4 +577,16 @@ struct ReviewCorrectionView: View {
             }
         }
     }
+}
+
+private struct LegacyV2Proposal: Decodable {
+    struct EvidenceRef: Decodable {
+        let text: String
+    }
+
+    let minorUnits: Int64
+    let currency: String
+    let direction: String
+    let counterpartyEvidence: EvidenceRef?
+    let occurredAtEpochMilliseconds: Int64?
 }

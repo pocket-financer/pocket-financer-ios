@@ -31,12 +31,11 @@ final class SmsProcessingStoreTests: XCTestCase {
             trigger: "manual",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "apple-system-language-model",
-            selectorRuntimeVersion: "iOS 26",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
-        XCTAssertEqual(snapshot.configuration.rolloutMode, "shadow")
-        XCTAssertEqual(snapshot.configuration.generationMode, "DIRECT_NON_THINKING")
+        XCTAssertEqual(snapshot.configuration.persistencePolicy.rolloutMode, "automatic")
+        XCTAssertEqual(snapshot.configuration.extractor.generationMode, "DIRECT_NON_THINKING")
 
         let store = SmsProcessingStore(modelContainer: database.container)
         let claim = try await store.claim(
@@ -102,8 +101,7 @@ final class SmsProcessingStoreTests: XCTestCase {
             trigger: "manual",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
         let store = SmsProcessingStore(modelContainer: database.container)
@@ -187,8 +185,7 @@ final class SmsProcessingStoreTests: XCTestCase {
             trigger: "manual",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
         let originalOperationID = original.operationID
@@ -199,8 +196,7 @@ final class SmsProcessingStoreTests: XCTestCase {
             trigger: "retry",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt.addingTimeInterval(1)
         )
 
@@ -252,15 +248,14 @@ final class SmsProcessingStoreTests: XCTestCase {
     func testCorrectionAtomicallyProjectsLedgerRevisionAndReplaysIdempotently() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
+        let rawBody = "INR 10 was debited from account **1234 at SYNTH SHOP or INR 12.50."
         let alert = InboxAlert(
             sourceIdentity: "synthetic-review-source",
-            contentDigest: CanonicalJSON.sha256(
-                "INR 10 was debited from account **1234 at SYNTH SHOP."
-            ),
+            contentDigest: CanonicalJSON.sha256(rawBody),
             origin: .manual,
             sourceApplication: "Tests",
             sender: "SYNTH",
-            rawBody: "INR 10 was debited from account **1234 at SYNTH SHOP.",
+            rawBody: rawBody,
             receivedAt: TestFixtures.receivedAt
         )
         let account = Account(
@@ -278,59 +273,91 @@ final class SmsProcessingStoreTests: XCTestCase {
             trigger: "manual",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
         let analysis = try StructuralSmsAnalyzer().analyze(
-            source: alert.rawBody, operation: snapshot
-        )
-        let amount = try XCTUnwrap(analysis.candidates.first { $0.kind == .amount })
-        let direction = try XCTUnwrap(analysis.candidates.first { $0.kind == .direction })
-        let accountCandidate = try XCTUnwrap(
-            analysis.candidates.first { $0.kind == .account && !$0.explicitlyAbsent }
-        )
-        let counterparty = try XCTUnwrap(
-            analysis.candidates.first { $0.kind == .counterparty && !$0.explicitlyAbsent }
-        )
-        let reconstructed = try SemanticReconstructor().reconstruct(
-            selection: GroundedSelectorResult(
-                decision: .posted,
-                posted: SelectorPostedSelection(
-                    amountCandidateID: amount.id,
-                    directionCandidateID: direction.id,
-                    accountCandidateID: accountCandidate.id,
-                    counterpartyCandidateID: counterparty.id
-                )
-            ),
-            analysis: analysis,
+            source: alert.rawBody,
             operation: snapshot
+        )
+        let initialOutput = try TestFixtures.strictPostedOutput(
+            for: rawBody,
+            amountText: "INR 10",
+            amountValue: "10",
+            direction: "debit",
+            directionText: "debited",
+            accountReference: "**1234",
+            accountText: "**1234",
+            counterpartyText: "SYNTH SHOP"
+        )
+        let extraction = try SmsExtractorValidator().validate(
+            rawOutput: initialOutput,
+            source: rawBody,
+            primaryCurrency: "INR"
+        )
+        let resultJSON = try SmsProcessingJSON.result(
+            status: "review",
+            extraction: extraction,
+            operation: snapshot,
+            account: SmsProcessingJSON.account(.unresolved, reference: "1234"),
+            duplicate: SmsProcessingJSON.duplicate(
+                status: "clear",
+                operation: snapshot,
+                fingerprint: CanonicalJSON.sha256("fp")
+            ),
+            gate: SmsProcessingJSON.gate(
+                posted: true,
+                accountReason: "account_resolution_unresolved",
+                duplicateStatus: "clear",
+                rolloutMode: "automatic"
+            ),
+            reasons: ["account_resolution_unresolved"]
         )
         let store = SmsProcessingStore(modelContainer: database.container)
         let claim = try await store.claim(
-            operationID: snapshot.operationID, now: TestFixtures.receivedAt
+            operationID: snapshot.operationID,
+            now: TestFixtures.receivedAt
         )
         try await store.recordAnalysis(
-            analysis, operationID: snapshot.operationID, now: TestFixtures.receivedAt
+            analysis,
+            operationID: snapshot.operationID,
+            now: TestFixtures.receivedAt
         )
-        try await store.recordReconstruction(
-            reconstructed, operationID: snapshot.operationID, now: TestFixtures.receivedAt
+        try await store.recordNormalizedResult(
+            operationID: snapshot.operationID,
+            semanticResultJSON: resultJSON,
+            decision: "posted"
         )
         try await store.recordGateDecision(
-            PersistenceGateDecision(
-                result: .blockedByMode,
-                primaryReason: "persistence_blocked_by_rollout_mode",
-                checks: []
+            claim,
+            result: "review_required",
+            primaryReason: "account_resolution_unresolved",
+            checksJSON: try SmsProcessingJSON.checksJSON(
+                posted: true,
+                accountReason: "account_resolution_unresolved",
+                duplicateStatus: "clear",
+                rolloutMode: "automatic"
             ),
-            accountResolution: .unique(accountID: account.id),
-            claim: claim,
-            rolloutMode: "shadow",
+            accountResolutionJSON: try SmsProcessingJSON.canonical(
+                SmsProcessingJSON.account(.unresolved, reference: "1234")
+            ),
+            rolloutMode: "automatic",
             now: TestFixtures.receivedAt
         )
         let reviewID = try await store.retainForReview(
             claim,
-            reasons: ["persistence_blocked_by_rollout_mode"],
+            reasons: ["account_resolution_unresolved"],
             now: TestFixtures.receivedAt
+        )
+        let correctedAmountRange = try XCTUnwrap(rawBody.range(of: "INR 12.50"))
+        let correctedAmountStart = rawBody[..<correctedAmountRange.lowerBound].unicodeScalars.count
+        let correctedAmountEnd =
+            correctedAmountStart + rawBody[correctedAmountRange].unicodeScalars.count
+        let correctedSpan = try UnicodeScalarSpan(
+            source: rawBody,
+            startScalar: correctedAmountStart,
+            endScalar: correctedAmountEnd,
+            text: "INR 12.50"
         )
         let actionID = UUID()
         let correction = ReviewCommand(
@@ -340,30 +367,42 @@ final class SmsProcessingStoreTests: XCTestCase {
             kind: .correct,
             corrections: [
                 SmsFieldCorrection(
-                    field: "amount_minor_units",
+                    field: "amount",
                     classification: .changedInterpretationAmongCandidates,
                     previousRevisionID: nil,
-                    candidateID: amount.id,
-                    evidence: amount.evidence,
+                    candidateID: nil,
+                    evidence: nil,
+                    scalarEvidence: correctedSpan,
                     newValue: "1250"
                 ),
                 SmsFieldCorrection(
                     field: "counterparty",
-                    classification: .suppliedManualUngroundedValue,
+                    classification: .suppliedSourceSupportedCandidateMiss,
                     previousRevisionID: nil,
                     candidateID: nil,
                     evidence: nil,
-                    newValue: "Corrected synthetic shop"
+                    scalarEvidence: nil,
+                    newValue: ""
+                ),
+                SmsFieldCorrection(
+                    field: "account_id",
+                    classification: .selectedExistingCandidate,
+                    previousRevisionID: nil,
+                    candidateID: nil,
+                    evidence: nil,
+                    newValue: account.id.uuidString.lowercased()
                 ),
             ],
             retryConfiguration: nil
         )
 
         let receipt = try await store.resolveReview(
-            correction, now: TestFixtures.receivedAt
+            correction,
+            now: TestFixtures.receivedAt
         )
         let replay = try await store.resolveReview(
-            correction, now: TestFixtures.receivedAt
+            correction,
+            now: TestFixtures.receivedAt
         )
 
         XCTAssertEqual(receipt.resultingRevision, 1)
@@ -373,19 +412,21 @@ final class SmsProcessingStoreTests: XCTestCase {
         let transaction = try XCTUnwrap(
             verification.fetch(FetchDescriptor<Transaction>()).first
         )
-        XCTAssertEqual(transaction.amountMinorUnits, 1250)
+        XCTAssertEqual(transaction.amountMinorUnits, 1_250)
         XCTAssertEqual(transaction.currencyCode, "INR")
-        XCTAssertEqual(transaction.merchant, "Corrected synthetic shop")
+        XCTAssertEqual(transaction.merchant, "Unspecified counterparty")
         XCTAssertEqual(transaction.accountID, account.id)
         XCTAssertEqual(transaction.reviewState, .confirmed)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsAccountAlias>()).count, 1)
         let revisions = try verification.fetch(FetchDescriptor<SmsTransactionRevision>())
         XCTAssertEqual(revisions.count, 1)
         XCTAssertEqual(
             revisions.first?.provenanceRawValue,
-            "user_corrected_projection"
+            "user_confirmed_source_span_revision"
         )
         XCTAssertEqual(
-            try verification.fetch(FetchDescriptor<SmsUserFeedbackEvent>()).count, 1
+            try verification.fetch(FetchDescriptor<SmsUserFeedbackEvent>()).count,
+            1
         )
         await xctAssertThrowsErrorAsync {
             _ = try await store.resolveReview(
@@ -423,8 +464,7 @@ final class SmsProcessingStoreTests: XCTestCase {
             trigger: "test",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
         let store = SmsProcessingStore(modelContainer: database.container)
@@ -495,6 +535,9 @@ final class SmsProcessingStoreTests: XCTestCase {
         XCTAssertEqual(account.bank, "Synthetic bank")
         XCTAssertEqual(account.kind, .account)
         XCTAssertEqual(account.suffix, "1234")
+        let alias = try XCTUnwrap(verification.fetch(FetchDescriptor<SmsAccountAlias>()).first)
+        XCTAssertEqual(alias.accountID, account.id)
+        XCTAssertTrue(alias.confirmedByUser)
         let transaction = try XCTUnwrap(
             verification.fetch(FetchDescriptor<Transaction>()).first
         )
@@ -612,6 +655,76 @@ final class SmsProcessingStoreTests: XCTestCase {
         XCTAssertNil(feedback.reviewCaseID)
         XCTAssertEqual(feedback.transactionID, transaction.id)
         XCTAssertEqual(feedback.actionRawValue, "correct")
+    }
+
+    @MainActor
+    func testFiveMinuteDuplicateWindowExcludesCurrentSourceAndChecksWindowBoundary() async throws {
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let account = Account(
+            name: "Main Checking",
+            bank: "HDFC Bank",
+            kind: .account,
+            suffix: "1234",
+            now: TestFixtures.receivedAt
+        )
+        let existingSourceID = UUID()
+        let persisted = Transaction(
+            amountMinorUnits: 50_000,
+            currencyCode: "INR",
+            merchant: "Demo Store",
+            occurredAt: TestFixtures.receivedAt,
+            direction: .debit,
+            accountID: account.id,
+            accountLabel: account.name,
+            parserName: SmsContractAssets.releaseID,
+            reviewState: .confirmed,
+            sourceAlertID: existingSourceID,
+            amountEvidenceText: "INR 500.00",
+            dateEvidenceText: nil,
+            now: TestFixtures.receivedAt
+        )
+        context.insert(account)
+        context.insert(persisted)
+        try context.save()
+
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let otherSourceID = UUID()
+        let atBoundary = try await store.duplicateStatus(
+            operationID: UUID(),
+            sourceID: otherSourceID,
+            stableEventID: UUID(),
+            accountID: account.id,
+            direction: "debit",
+            minorUnits: 50_000,
+            currency: "INR",
+            occurredAt: TestFixtures.receivedAt.addingTimeInterval(300)
+        )
+        XCTAssertEqual(atBoundary, "possible_duplicate")
+
+        let outsideBoundary = try await store.duplicateStatus(
+            operationID: UUID(),
+            sourceID: otherSourceID,
+            stableEventID: UUID(),
+            accountID: account.id,
+            direction: "debit",
+            minorUnits: 50_000,
+            currency: "INR",
+            occurredAt: TestFixtures.receivedAt.addingTimeInterval(301)
+        )
+        XCTAssertEqual(outsideBoundary, "clear")
+
+        let sameSource = try await store.duplicateStatus(
+            operationID: UUID(),
+            sourceID: existingSourceID,
+            stableEventID: UUID(),
+            accountID: account.id,
+            direction: "debit",
+            minorUnits: 50_000,
+            currency: "INR",
+            occurredAt: TestFixtures.receivedAt
+        )
+        XCTAssertEqual(sameSource, "already_persisted")
     }
 }
 

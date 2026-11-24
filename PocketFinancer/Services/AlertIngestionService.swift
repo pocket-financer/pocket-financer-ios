@@ -52,7 +52,6 @@ final class AlertIngestionService {
 
     private let context: ModelContext
     private let contextSaver: @MainActor (ModelContext) throws -> Void
-    private let directSelector: any DirectCandidateSelecting
     private let smsExtractor: any FoundationSmsExtracting
     private let extractorEligibilityOverride: Bool?
 
@@ -75,8 +74,7 @@ final class AlertIngestionService {
 
     private enum PreparedProcessing {
         case receipt(IngestionReceipt)
-        case current(SmsV4OperationSnapshot, SmsOperationClaim)
-        case legacy(SmsOperationSnapshot, SmsOperationClaim)
+        case current(SmsOperationSnapshot, SmsOperationClaim)
     }
 
     private static var processingClaims: [UUID: ProcessingClaim] = [:]
@@ -85,13 +83,11 @@ final class AlertIngestionService {
     init(
         context: ModelContext,
         contextSaver: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
-        directSelector: any DirectCandidateSelecting = FoundationDirectCandidateSelector(),
         smsExtractor: any FoundationSmsExtracting = FoundationSmsExtractor(),
         extractorEligibilityOverride: Bool? = nil
     ) {
         self.context = context
         self.contextSaver = contextSaver
-        self.directSelector = directSelector
         self.smsExtractor = smsExtractor
         self.extractorEligibilityOverride = extractorEligibilityOverride
     }
@@ -402,22 +398,8 @@ final class AlertIngestionService {
         switch prepared {
         case .receipt(let receipt):
             return receipt
-        case .legacy(let snapshot, let initialClaim):
-            let coordinator = DefaultSmsProcessingCoordinator(
-                store: processingStore,
-                selector: directSelector,
-                accountResolver: { evidence in
-                    try GroundedAccountResolver(context: self.context).resolve(evidence)
-                }
-            )
-            outcome = await coordinator.process(
-                source: sourceReference,
-                operation: snapshot,
-                observer: NoOpSmsProcessingObserver(),
-                initialClaim: initialClaim
-            )
         case .current(let snapshot, let initialClaim):
-            let coordinator = SmsV4ProcessingCoordinator(
+            let coordinator = SmsProcessingCoordinator(
                 store: processingStore,
                 extractor: smsExtractor,
                 accountResolver: { evidence in
@@ -441,6 +423,8 @@ final class AlertIngestionService {
             // can never be written back over the durable discard.
             currentAlert.eraseSensitiveEvidence()
             currentAlert.status = .rejected
+            currentAlert.rejectionCode =
+                reason == "extractor_none" ? "tombstoned_none" : "tombstoned_excluded"
             currentAlert.lastErrorCode = reason
             currentAlert.updatedAt = .now
             try save()
@@ -451,9 +435,12 @@ final class AlertIngestionService {
             currentAlert.updatedAt = .now
             try save()
             return IngestionReceipt(alertID: alertID, disposition: .needsReview)
-        case .persisted:
+        case .persisted(_, let transactionIDs, _):
             currentAlert.status = .imported
+            currentAlert.transactionID = transactionIDs.first ?? currentAlert.transactionID
             currentAlert.lastErrorCode = nil
+            currentAlert.rejectionCode = nil
+            currentAlert.parserName = SmsContractAssets.releaseID
             currentAlert.updatedAt = .now
             try save()
             return IngestionReceipt(alertID: alertID, disposition: .imported)
@@ -539,6 +526,8 @@ final class AlertIngestionService {
             case .discarded:
                 alert.eraseSensitiveEvidence()
                 alert.status = .rejected
+                alert.rejectionCode = latest.retentionState
+                alert.lastErrorCode = latest.tombstoneReason
                 try save()
                 return .receipt(IngestionReceipt(alertID: sourceID, disposition: .rejected))
             default:
@@ -587,12 +576,7 @@ final class AlertIngestionService {
         let originalContract = try originalConfigurationContract(
             parentOperationID: parentID, mode: retryConfigurationMode
         )
-        if let originalContract,
-            ![
-                "pocketfinancer.processing-config/2",
-                "pocketfinancer.processing-config/4",
-            ].contains(originalContract)
-        {
+        if let originalContract, originalContract != SmsContractAssets.releaseID {
             alert.status = .needsReview
             alert.lastErrorCode = "original_configuration_adapter_unavailable"
             alert.updatedAt = now
@@ -607,25 +591,17 @@ final class AlertIngestionService {
         let trigger =
             isOwnerRetry
             ? "retry" : (allowBeyondAutomaticAttemptLimit ? "foreground_or_user" : "automatic_recovery")
-        if originalContract == "pocketfinancer.processing-config/2" {
-            let snapshot = try SmsOperationSnapshotFactory(context: context).create(
-                sourceAlertID: sourceID, parentOperationID: parentID, trigger: trigger,
-                primaryCurrency: settings.primaryCurrency, enabledProfiles: settings.enabledProfiles,
-                selectorModelIdentifier: "apple-system-language-model",
-                selectorRuntimeVersion: ProcessInfo.processInfo.operatingSystemVersionString
-            )
-            let claim = try SmsProcessingStore.claimForAdmission(
-                operationID: snapshot.operationID, context: context
-            )
-            return .legacy(snapshot, claim)
-        }
-        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
-            sourceAlertID: sourceID, parentOperationID: parentID, trigger: trigger,
-            primaryCurrency: settings.primaryCurrency, enabledProfiles: settings.enabledProfiles,
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
+            sourceAlertID: sourceID,
+            parentOperationID: parentID,
+            trigger: trigger,
+            primaryCurrency: settings.primaryCurrency,
+            enabledProfiles: settings.enabledProfiles,
             extractorEligibilityOverride: extractorEligibilityOverride
         )
         let claim = try SmsProcessingStore.claimForAdmission(
-            operationID: snapshot.operationID, context: context
+            operationID: snapshot.operationID,
+            context: context
         )
         return .current(snapshot, claim)
     }

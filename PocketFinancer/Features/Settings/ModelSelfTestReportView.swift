@@ -21,7 +21,7 @@ struct ModelSelfTestReportView: View {
                 } footer: {
                     Text(
                         "This is an in-memory synthetic diagnostic. "
-                            + "Shadow mode prevents a transaction from being created."
+                            + "Diagnostic review routing prevents a transaction from being created."
                     )
                 }
 
@@ -32,7 +32,7 @@ struct ModelSelfTestReportView: View {
                     LabeledContent("Settlement", value: report.settlement)
                 }
 
-                Section("Grounded selector contract") {
+                Section("Strict extractor contract") {
                     LabeledContent("Input contract", value: report.contractVersion)
                     LabeledContent("Generation mode", value: report.generationMode)
                     LabeledContent("Output status", value: report.outputCompletion)

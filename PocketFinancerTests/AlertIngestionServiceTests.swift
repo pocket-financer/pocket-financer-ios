@@ -26,70 +26,6 @@ private actor IngestionSelectorProbe {
     }
 }
 
-private struct GroundedIngestionSelector: DirectCandidateSelecting {
-    let probe: IngestionSelectorProbe?
-
-    init(probe: IngestionSelectorProbe? = nil) {
-        self.probe = probe
-    }
-
-    func select(source: String, analysis: SmsAnalysis) async throws -> DirectSelectorResponse {
-        await probe?.recordCall()
-        let amount = try candidate(.amount, in: analysis, allowAbsent: false)
-        let direction = try candidate(.direction, in: analysis, allowAbsent: false)
-        let account = try candidate(.account, in: analysis, allowAbsent: true)
-        let counterparty = try candidate(.counterparty, in: analysis, allowAbsent: true)
-        let output = try JSONSerialization.data(
-            withJSONObject: [
-                "decision": "posted",
-                "amount": amount.id,
-                "direction": direction.id,
-                "account": account.id,
-                "counterparty": counterparty.id,
-            ],
-            options: [.sortedKeys, .withoutEscapingSlashes]
-        )
-        return DirectSelectorResponse(
-            rawOutput: String(decoding: output, as: UTF8.self),
-            runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
-            requestJSON: try FoundationDirectCandidateSelector.requestJSON(
-                source: source, analysis: analysis
-            ),
-            completion: "complete"
-        )
-    }
-
-    private func candidate(
-        _ kind: SmsCandidateKind,
-        in analysis: SmsAnalysis,
-        allowAbsent: Bool
-    ) throws -> SmsCandidate {
-        if let grounded = analysis.candidates.first(where: {
-            $0.kind == kind && !$0.explicitlyAbsent
-        }) {
-            return grounded
-        }
-        if allowAbsent,
-            let absent = analysis.candidates.first(where: {
-                $0.kind == kind && $0.explicitlyAbsent
-            })
-        {
-            return absent
-        }
-        throw TransactionParserError.generationFailed
-    }
-}
-
-private struct CancellingIngestionSelector: DirectCandidateSelecting {
-    let probe: IngestionSelectorProbe
-
-    func select(source _: String, analysis _: SmsAnalysis) async throws -> DirectSelectorResponse {
-        await probe.recordCall()
-        try await Task.sleep(for: .seconds(30))
-        throw TransactionParserError.generationFailed
-    }
-}
-
 private struct GroundedIngestionExtractor: FoundationSmsExtracting {
     let probe: IngestionSelectorProbe?
 
@@ -181,7 +117,7 @@ final class AlertIngestionServiceTests: XCTestCase {
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
             context: context,
-            directSelector: GroundedIngestionSelector(probe: probe)
+            smsExtractor: GroundedIngestionExtractor(probe: probe)
         )
 
         let receipt = try service.enqueue(
@@ -292,7 +228,7 @@ final class AlertIngestionServiceTests: XCTestCase {
         )
     }
 
-    func testStandaloneOtpIsDiscardedByExtractorAndSensitiveEvidenceIsErased() async throws {
+    func testStandaloneOtpIsTombstonedByPrefilterWithoutInvokingExtractor() async throws {
         let restore = usePrimaryCurrency("INR")
         defer { restore() }
         let database = try AppDatabase(inMemory: true)
@@ -315,11 +251,49 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertEqual(receipt.disposition, .rejected)
         let alert = try XCTUnwrap(context.fetch(FetchDescriptor<InboxAlert>()).first)
         XCTAssertEqual(alert.status, .rejected)
+        XCTAssertEqual(alert.rejectionCode, "tombstoned_excluded")
+        XCTAssertEqual(alert.lastErrorCode, "prefilter_otp_verification")
+        XCTAssertTrue(alert.rawBody.isEmpty)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SmsSelectorAttempt>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Transaction>()).isEmpty)
+        let operation = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        XCTAssertEqual(operation.retentionState, "tombstoned_excluded")
+    }
+
+    func testNonTransactionCardAlertIsTombstonedByExtractorNone() async throws {
+        let restore = usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+
+        let receipt = try await service.ingest(
+            body: "Your card balance statement summary for INR 100.00 OTP free view is ready.",
+            sender: "BANK",
+            receivedAt: TestFixtures.receivedAt,
+            sourceApplication: "Messages",
+            origin: .shortcut
+        )
+
+        XCTAssertEqual(receipt.disposition, .rejected)
+        let alert = try XCTUnwrap(context.fetch(FetchDescriptor<InboxAlert>()).first)
+        XCTAssertEqual(alert.status, .rejected)
+        XCTAssertEqual(alert.rejectionCode, "tombstoned_none")
+        XCTAssertEqual(alert.lastErrorCode, "extractor_none")
         XCTAssertTrue(alert.rawBody.isEmpty)
         let calls = await probe.callCount
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<SmsSelectorAttempt>()).count, 1)
         XCTAssertTrue(try context.fetch(FetchDescriptor<Transaction>()).isEmpty)
+        let operation = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        XCTAssertEqual(operation.retentionState, "tombstoned_none")
     }
 
     func testPossibleDuplicatePreservesBothAdmissionsForReview() async throws {
@@ -477,7 +451,7 @@ final class AlertIngestionServiceTests: XCTestCase {
                 as? [String: Any]
         )
         configuration["contract"] = "pocketfinancer.processing-config/1"
-        original.configurationJSON = try SmsV4ProcessingJSON.canonical(configuration)
+        original.configurationJSON = try SmsProcessingJSON.canonical(configuration)
         original.contractReleaseID = "frozen-v1-test"
         try context.save()
 
@@ -599,7 +573,7 @@ final class AlertIngestionServiceTests: XCTestCase {
             extractorEligibilityOverride: true
         )
         let queued = try enqueueAdmissionFixture(service)
-        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
             sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
         )
@@ -653,7 +627,7 @@ final class AlertIngestionServiceTests: XCTestCase {
             extractorEligibilityOverride: true
         )
         let queued = try enqueueAdmissionFixture(service)
-        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
             sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
         )
@@ -687,7 +661,7 @@ final class AlertIngestionServiceTests: XCTestCase {
             extractorEligibilityOverride: true
         )
         let queued = try enqueueAdmissionFixture(service)
-        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
             sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
         )
@@ -902,7 +876,7 @@ final class AlertIngestionServiceTests: XCTestCase {
             extractorEligibilityOverride: true
         )
         let queued = try enqueueAdmissionFixture(service)
-        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
             sourceAlertID: queued.alertID, trigger: "test", primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
         )
@@ -943,7 +917,7 @@ final class AlertIngestionServiceTests: XCTestCase {
         let first = try enqueueAdmissionFixture(service)
         let second = try enqueueAdmissionFixture(service)
         XCTAssertNotEqual(first.alertID, second.alertID)
-        let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
             sourceAlertID: first.alertID, trigger: "test", primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"], extractorEligibilityOverride: true
         )

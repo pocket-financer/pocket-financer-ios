@@ -1,80 +1,22 @@
-# iOS SMS processing next steps
+# iOS SMS processing status & next steps
 
-Status: **platform handoff; not a completion claim**
-Last reconciled: 2026-09-22
+Status: **consolidated on source; awaiting macOS/iPhone verification**
 
-The shared repository `pocket-financer-intelligence` owns the canonical architecture,
-versioned contracts, sanitized vectors, host GGUF evaluation, native-trace import,
-and the planned Android/iOS native scoring lanes. This repository owns the
-Swift/Foundation Models, SwiftData, SwiftUI, Xcode, simulator, and physical-iPhone
-implementation lane.
+`pocket-financer-intelligence` owns the canonical SMS contracts, prompts, schemas, profiles, and golden vectors (`configs/sms_processing/`), synced into iOS via `scripts/sync_native_assets.py --target ios` into `PocketFinancer/Resources/SmsProcessing/` and `PocketFinancerTests/Fixtures/prefilter-vectors.json`.
 
-## Implemented source baseline
+## Implemented in source
 
-The additive v4 source includes strict extractor parsing, Unicode-scalar conversion,
-exact minor-unit normalization, account resolution, sanitized vectors, v4
-operation routing, SwiftData migration, durable review/recovery state, review
-drafts, atomic confirmation, full-source review, per-field highlights, and one
-active native text selection. V1/v2/v3 stored operations remain compatible.
+- **Deterministic asset verification (`SmsContractAssets`)**: verifies `release-manifest.json` (`pocketfinancer.sms-pipeline/1`) and all 17 bundled iOS assets before creating operations or loading `prompts/apple-fm-sms-extractor.txt`.
+- **Prefilter before inference (`SmsPrefilter`)**: mirrors `sms-prefilter/1` (`54/54` vectors) and settles exclusions into body-free `tombstoned_excluded` records.
+- **Flat guided Apple Foundation Models extractor (`FoundationSmsExtractor`)**: generates 18-field `@Generable` `GeneratedSmsExtraction` matching `apple-fm-flat.schema.json` with deterministic canonical projection (`projectFlatExtraction`) into `pocketfinancer.sms-extractor/1`.
+- **Host validator (`SmsExtractorValidator`)**: enforces Unicode-scalar spans, ISO-4217 currency markers, expanded debit/credit cues, normalized masked account/VPA references, and counterparty derivation.
+- **Coordinator & Store (`SmsProcessingCoordinator`, `SmsProcessingStore`)**:
+  - Automatic save (`rollout_mode: "automatic"`) when valid `posted` resolves uniquely to a confirmed `SmsAccountAlias` and clears the 5-minute (`300` seconds) duplicate window.
+  - Review retention (`SmsReviewCase`) for unresolved, ambiguous, abstained, invalid, failed, or 300-second duplicate results, with atomic `Account` + confirmed `SmsAccountAlias` creation on confirmation.
+  - Body-free tombstones (`tombstoned_excluded`, `tombstoned_none`) erasing `InboxAlert.rawBody`.
 
-V4 is `review_only`. A complete valid result is therefore still retained for
-review. Swift/XCTest source coverage is not a Mac build, simulator run, or iPhone
-result. Those gates remain open.
+## Verification order on macOS / physical iPhone
 
-## Next implementation change
-
-After the shared repository freezes an additive successor contract:
-
-1. Route a complete, strictly valid, uniquely resolved, non-duplicate posted result
-   directly and atomically into Transactions.
-2. Route only incomplete, invalid, ambiguous, abstained, interrupted,
-   incompatible, or failed operations to Review.
-3. Keep valid `none` handling separate from Transactions and Review according to
-   the versioned evidence-retention policy.
-4. Preserve original release routing for stored operations and create an explicit
-   new operation for a retry under the successor release.
-5. Keep corrections revision-bound, append-only, local label evidence. Explicit
-   export and adjudication are required before approved, source-grounded,
-   split-safe labels may improve the SLM or another pipeline component.
-
-## Transparency and Apple API limits
-
-Foundation Models exposes cumulative structured-generation snapshots, not decoded
-token pieces/IDs, token counts, logits, hidden reasoning, or an app-readable model
-file. Show each observable snapshot while generation is active and label token
-decoding as unavailable. Never reconstruct text and call it tokens.
-
-For model identity, use `system_managed_runtime` with
-`model_file_sha256: null` and record the observable runtime, OS, device, prompt,
-grammar, validation, and model identifier fields. Never fabricate a hash.
-
-Re-run accessibility coverage for the complete source SMS, separate
-amount/direction/account/counterparty highlights, VoiceOver labels and focus order,
-and the single-active-selection invariant. A later failure must not hide fields
-that were successfully grounded earlier: Review shows every valid partial field
-from the last completed stage on the unchanged SMS body.
-
-## Shared evaluation lane
-
-`pocket-financer-intelligence` already provides the host GGUF evaluator and encrypted
-native-trace import. The dedicated iOS native evaluator/scorer does not exist yet
-and remains planned. It will run the exact app contract through the Mac/Xcode lane,
-export a provenance-bound encrypted trace bundle, and score aggregate contract,
-model, routing, review, recovery, latency, and resource results in the shared
-repository. Host or Android evidence is not iOS Foundation Models evidence.
-
-## Mac/iOS verification order
-
-1. Verify the shared v4/successor bundle and sanitized vectors without modifying
-   frozen assets.
-2. Run Swift formatting, an unsigned Release build, XCTest, migrations, recovery,
-   atomic confirmation, and UI/accessibility tests on Xcode.
-3. Run simulator flows for UI, storage, migration, and process recovery; do not
-   treat simulator model availability as Foundation Models generation evidence.
-4. Run the supported physical iPhone matrix for the synthetic extractor,
-   Foundation Models provenance, live snapshots, Shortcuts unlocked/locked
-   delivery, interruption/retry, accessibility, memory, latency, thermal, and
-   battery behavior.
-
-Do not enable rollout or describe the full SMS implementation as complete until
-the shared evaluation strategy and physical-device gates pass.
+1. Run `python ../pocket-financer-intelligence/scripts/sync_native_assets.py --check --target ios`.
+2. Run `scripts/format.sh --lint`, `scripts/build.sh`, and `scripts/test.sh` (including `SmsPrefilterTests`, `FoundationSmsExtractorTests`, `PocketFinancerSchemaMigrationTests`, `NativeSmsProcessingTests`, `AlertIngestionServiceTests`, `SmsProcessingStoreTests`, and `ModelSelfTestServiceTests`).
+3. Run the **Settings -> Run Synthetic Model Test** check on an Apple Intelligence-enabled iPhone and complete Shortcuts unlock/lock delivery checks in [device-validation.md](device-validation.md).

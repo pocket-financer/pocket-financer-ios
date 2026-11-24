@@ -110,6 +110,26 @@ final class SmsProcessingOperation {
         get { SmsOperationState(rawValue: stateRawValue) ?? .interrupted }
         set { stateRawValue = newValue.rawValue }
     }
+
+    var retentionState: String? {
+        guard state == .discarded, let settlementReceiptJSON else { return nil }
+        guard
+            let data = settlementReceiptJSON.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object["retention_state"] as? String
+    }
+
+    var tombstoneReason: String? {
+        guard state == .discarded, let settlementReceiptJSON else { return nil }
+        if let data = settlementReceiptJSON.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let reason = object["reason"] as? String
+        {
+            return reason
+        }
+        return settlementReceiptJSON
+    }
 }
 
 @Model

@@ -672,9 +672,11 @@ actor SmsProcessingStore {
                 predicate: #Predicate { $0.operationID == operationID }
             )
         ).first
-        if storedResult?.contractVersion == "pocketfinancer.processing-result/3" {
+        if storedResult?.contractVersion == "pocketfinancer.processing-result/3",
+            storedResult?.recognitionDecisionRawValue == "posted"
+        {
             guard let storedResult else { throw SmsProcessingStoreError.invalidCommand }
-            return try projectV4Review(
+            return try projectGroundedReview(
                 review: review,
                 operation: operation,
                 storedResult: storedResult,
@@ -685,7 +687,7 @@ actor SmsProcessingStore {
         }
         let result = storedResult?.semanticResultJSON.flatMap {
             try? JSONDecoder().decode(
-                ReconstructedSmsTransaction.self, from: Data($0.utf8)
+                LegacyV2Proposal.self, from: Data($0.utf8)
             )
         }
         if command.kind == .confirm, result == nil {
@@ -789,6 +791,17 @@ actor SmsProcessingStore {
                 now: now
             )
             modelContext.insert(account)
+            if let newAccountSuffix,
+                let normalizedAlias = SmsExtractorNormalizer.normalizeAccount(newAccountSuffix)
+            {
+                let aliasKind = normalizedAlias.contains("@") ? "vpa" : "suffix"
+                try insertConfirmedAliasIfAbsent(
+                    accountID: account.id,
+                    normalizedReference: normalizedAlias,
+                    aliasKind: aliasKind,
+                    now: now
+                )
+            }
             accountID = account.id
         }
         guard let accountID else { throw SmsProcessingStoreError.invalidCommand }
@@ -883,7 +896,7 @@ actor SmsProcessingStore {
         return revision.id
     }
 
-    private func projectV4Review(
+    private func projectGroundedReview(
         review: SmsReviewCase,
         operation: SmsProcessingOperation,
         storedResult: SmsReconstructedResult,
@@ -893,20 +906,30 @@ actor SmsProcessingStore {
     ) throws -> UUID {
         let sourceID = review.sourceAlertID
         let targetOperationID = operation.id
-        guard
-            operation.contractReleaseID == NativeSmsV4Assets.releaseID,
-            SmsV4ProcessingJSON.configurationMatches(
+        let isCurrentContract =
+            operation.contractReleaseID == SmsContractAssets.releaseID
+            && SmsProcessingJSON.configurationMatches(
                 configurationJSON: operation.configurationJSON,
                 configurationHash: operation.configurationHash
-            ),
+            )
+        let isLegacyV4Contract =
+            operation.contractReleaseID == "native-integration-v4"
+            && SmsProcessingJSON.legacyV4ConfigurationMatches(
+                configurationJSON: operation.configurationJSON,
+                configurationHash: operation.configurationHash
+            )
+        guard
+            isCurrentContract || isLegacyV4Contract,
             let configuration = try? JSONSerialization.jsonObject(
                 with: Data(operation.configurationJSON.utf8)
             ) as? [String: Any],
-            configuration["contract"] as? String == "pocketfinancer.processing-config/4",
+            let contract = configuration["contract"] as? String,
+            [SmsContractAssets.releaseID, "pocketfinancer.processing-config/4"].contains(contract),
             let contractRelease = configuration["contract_release"] as? [String: Any],
-            contractRelease["release_id"] as? String == NativeSmsV4Assets.releaseID,
+            contractRelease["release_id"] as? String == operation.contractReleaseID,
             let persistencePolicy = configuration["persistence_policy"] as? [String: Any],
-            persistencePolicy["rollout_mode"] as? String == "review_only",
+            let rolloutMode = persistencePolicy["rollout_mode"] as? String,
+            ["automatic", "review_only"].contains(rolloutMode),
             configuration["source_ref_hash"] as? String
                 == CanonicalJSON.sha256(sourceID.uuidString.lowercased()),
             let alert = try modelContext.fetch(
@@ -929,12 +952,62 @@ actor SmsProcessingStore {
             base.duplicateSourceEventKey == operation.stableEventID.uuidString.lowercased(),
             base.duplicateStatus != "already_persisted"
         else { throw SmsProcessingStoreError.invalidCommand }
-        let allowed = Set(["amount", "direction", "account", "counterparty"])
-        guard command.corrections.allSatisfy({ allowed.contains($0.field) }) else {
+
+        let groundedFields = Set(["amount", "direction", "account", "counterparty"])
+        let accountFields = Set([
+            "account_id",
+            "new_account_name",
+            "new_account_bank",
+            "new_account_kind",
+            "new_account_suffix",
+        ])
+        guard
+            command.corrections.allSatisfy({
+                groundedFields.contains($0.field) || accountFields.contains($0.field)
+            })
+        else { throw SmsProcessingStoreError.invalidCommand }
+
+        var explicitAccountID: UUID?
+        var newAccountName: String?
+        var newAccountBank: String?
+        var newAccountKind: AccountKind?
+        var newAccountSuffix: String?
+        for correction in command.corrections where accountFields.contains(correction.field) {
+            switch correction.field {
+            case "account_id":
+                guard let value = UUID(uuidString: correction.newValue) else {
+                    throw SmsProcessingStoreError.invalidCommand
+                }
+                explicitAccountID = value
+            case "new_account_name":
+                let value = correction.newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !value.isEmpty else { throw SmsProcessingStoreError.invalidCommand }
+                newAccountName = value
+            case "new_account_bank":
+                let value = correction.newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                newAccountBank = value.isEmpty ? nil : value
+            case "new_account_kind":
+                guard let value = AccountKind(rawValue: correction.newValue) else {
+                    throw SmsProcessingStoreError.invalidCommand
+                }
+                newAccountKind = value
+            case "new_account_suffix":
+                let value = correction.newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard
+                    value.isEmpty
+                        || (value.count >= 2 && value.count <= 8 && value.allSatisfy(\.isNumber))
+                else { throw SmsProcessingStoreError.invalidCommand }
+                newAccountSuffix = value.isEmpty ? nil : value
+            default:
+                throw SmsProcessingStoreError.invalidCommand
+            }
+        }
+        guard !(explicitAccountID != nil && newAccountName != nil) else {
             throw SmsProcessingStoreError.invalidCommand
         }
+
         let projection = try SmsReviewProjection.applying(
-            command.corrections,
+            command.corrections.filter { groundedFields.contains($0.field) },
             to: base,
             source: alert.rawBody
         )
@@ -963,54 +1036,98 @@ actor SmsProcessingStore {
         else { throw SmsProcessingStoreError.invalidCommand }
         let aliasKind = normalizedReference.contains("@") ? "vpa" : "suffix"
         let aliasHash = CanonicalJSON.sha256("\(aliasKind):\(normalizedReference)")
-        let confirmed = true
         let scope = "owned_account_v1"
-        let aliases = try modelContext.fetch(
-            FetchDescriptor<SmsAccountAlias>(
-                predicate: #Predicate {
-                    $0.normalizedAliasHash == aliasHash
-                        && $0.confirmedByUser == confirmed
-                        && $0.matchingScopeRawValue == scope
-                }
-            )
-        )
-        let accounts = try modelContext.fetch(FetchDescriptor<Account>())
-        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
-        let matches = Array(Set(aliases.map(\.accountID))).compactMap { accountsByID[$0] }
-        guard matches.count <= 1 else { throw SmsProcessingStoreError.invalidCommand }
+
         let account: Account
-        if let existing = matches.first {
+        if let explicitAccountID {
+            let targetID = explicitAccountID
+            guard
+                let existing = try modelContext.fetch(
+                    FetchDescriptor<Account>(predicate: #Predicate { $0.id == targetID })
+                ).first
+            else { throw SmsProcessingStoreError.invalidCommand }
             account = existing
-        } else {
-            let suffix = aliasKind == "suffix" ? normalizedReference : nil
-            let accountID = try deterministicReviewUUID(
-                "account\0\(scope)\0\(aliasKind)\0\(aliasHash)"
+            try insertConfirmedAliasIfAbsent(
+                accountID: account.id,
+                normalizedReference: normalizedReference,
+                aliasKind: aliasKind,
+                now: now
             )
-            let aliasID = try deterministicReviewUUID(
-                "alias\0\(scope)\0\(aliasKind)\0\(aliasHash)"
-            )
-            account = Account(
-                id: accountID,
-                name: aliasKind == "vpa"
-                    ? "UPI account \(normalizedReference)"
-                    : "Account ••\(normalizedReference.suffix(4))",
-                bank: alert.sender.isEmpty ? "Unknown Account" : alert.sender,
-                kind: aliasKind == "vpa" ? .account : .card,
+        } else if let newAccountName {
+            let suffix = newAccountSuffix ?? (aliasKind == "suffix" ? normalizedReference : nil)
+            let created = Account(
+                name: newAccountName,
+                bank: newAccountBank ?? newAccountName,
+                kind: newAccountKind ?? (aliasKind == "vpa" ? .account : .card),
                 suffix: suffix,
                 now: now
             )
-            modelContext.insert(account)
-            modelContext.insert(
-                SmsAccountAlias(
-                    id: aliasID,
+            modelContext.insert(created)
+            account = created
+            if let suffix, let normalizedAlias = SmsExtractorNormalizer.normalizeAccount(suffix) {
+                try insertConfirmedAliasIfAbsent(
                     accountID: account.id,
-                    normalizedAliasHash: aliasHash,
+                    normalizedReference: normalizedAlias,
+                    aliasKind: normalizedAlias.contains("@") ? "vpa" : "suffix",
+                    now: now
+                )
+            } else if newAccountSuffix == nil {
+                try insertConfirmedAliasIfAbsent(
+                    accountID: account.id,
+                    normalizedReference: normalizedReference,
                     aliasKind: aliasKind,
-                    matchingScope: scope,
-                    confirmedByUser: true,
-                    createdAt: now
+                    now: now
+                )
+            }
+        } else {
+            let confirmed = true
+            let aliases = try modelContext.fetch(
+                FetchDescriptor<SmsAccountAlias>(
+                    predicate: #Predicate {
+                        $0.normalizedAliasHash == aliasHash
+                            && $0.confirmedByUser == confirmed
+                            && $0.matchingScopeRawValue == scope
+                    }
                 )
             )
+            let accounts = try modelContext.fetch(FetchDescriptor<Account>())
+            let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+            let matches = Array(Set(aliases.map(\.accountID))).compactMap { accountsByID[$0] }
+            guard matches.count <= 1 else { throw SmsProcessingStoreError.invalidCommand }
+            if let existing = matches.first {
+                account = existing
+            } else {
+                let suffix = aliasKind == "suffix" ? normalizedReference : nil
+                let accountID = try deterministicReviewUUID(
+                    "account\0\(scope)\0\(aliasKind)\0\(aliasHash)"
+                )
+                let aliasID = try deterministicReviewUUID(
+                    "alias\0\(scope)\0\(aliasKind)\0\(aliasHash)"
+                )
+                let created = Account(
+                    id: accountID,
+                    name: aliasKind == "vpa"
+                        ? "UPI account \(normalizedReference)"
+                        : "Account ••\(normalizedReference.suffix(4))",
+                    bank: alert.sender.isEmpty ? "Unknown Account" : alert.sender,
+                    kind: aliasKind == "vpa" ? .account : .card,
+                    suffix: suffix,
+                    now: now
+                )
+                modelContext.insert(created)
+                modelContext.insert(
+                    SmsAccountAlias(
+                        id: aliasID,
+                        accountID: created.id,
+                        normalizedAliasHash: aliasHash,
+                        aliasKind: aliasKind,
+                        matchingScope: scope,
+                        confirmedByUser: true,
+                        createdAt: now
+                    )
+                )
+                account = created
+            }
         }
 
         let transaction = Transaction(
@@ -1022,7 +1139,7 @@ actor SmsProcessingStore {
             accountID: account.id,
             accountLabel: account.name,
             isEdited: !command.corrections.isEmpty,
-            parserName: "direct-sms-extractor-v4",
+            parserName: operation.contractReleaseID,
             reviewState: .confirmed,
             sourceAlertID: sourceID,
             amountEvidenceText: projection.amountSpan.text,
@@ -1057,6 +1174,37 @@ actor SmsProcessingStore {
         )
         modelContext.insert(revision)
         return revision.id
+    }
+
+    private func insertConfirmedAliasIfAbsent(
+        accountID: UUID,
+        normalizedReference: String,
+        aliasKind: String,
+        now: Date
+    ) throws {
+        let aliasHash = CanonicalJSON.sha256("\(aliasKind):\(normalizedReference)")
+        let scope = "owned_account_v1"
+        let confirmed = true
+        let existing = try modelContext.fetch(
+            FetchDescriptor<SmsAccountAlias>(
+                predicate: #Predicate {
+                    $0.normalizedAliasHash == aliasHash
+                        && $0.confirmedByUser == confirmed
+                        && $0.matchingScopeRawValue == scope
+                }
+            )
+        )
+        guard existing.isEmpty else { return }
+        modelContext.insert(
+            SmsAccountAlias(
+                accountID: accountID,
+                normalizedAliasHash: aliasHash,
+                aliasKind: aliasKind,
+                matchingScope: scope,
+                confirmedByUser: true,
+                createdAt: now
+            )
+        )
     }
 
     private func deterministicReviewUUID(_ seed: String) throws -> UUID {
@@ -1140,6 +1288,32 @@ actor SmsProcessingStore {
         guard let operation = try operation(id: operationID), operation.settledAt != nil else {
             return nil
         }
+        if operation.state == .persisted {
+            let targetID = operationID
+            let revisions = try modelContext.fetch(
+                FetchDescriptor<SmsTransactionRevision>(
+                    predicate: #Predicate {
+                        $0.operationID == targetID && $0.isCurrentProjection
+                    }
+                )
+            )
+            var transactionIDs = revisions.map(\.transactionID)
+            if transactionIDs.isEmpty {
+                let sourceID = operation.sourceAlertID
+                if let alert = try modelContext.fetch(
+                    FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == sourceID })
+                ).first,
+                    let transactionID = alert.transactionID
+                {
+                    transactionIDs = [transactionID]
+                }
+            }
+            return .persisted(
+                operationID: operationID,
+                transactionIDs: transactionIDs,
+                alreadyCommitted: true
+            )
+        }
         if operation.state == .retainedReview {
             let targetID = operationID
             guard
@@ -1159,7 +1333,7 @@ actor SmsProcessingStore {
         if operation.state == .discarded {
             return .terminallyDiscarded(
                 operationID: operationID,
-                reason: operation.settlementReceiptJSON ?? "terminal_discard"
+                reason: operation.tombstoneReason ?? "terminal_discard"
             )
         }
         return nil
@@ -1240,26 +1414,10 @@ actor SmsProcessingStore {
         try saveOrRollback()
     }
 
-    func recordReconstruction(
-        _ result: ReconstructedSmsTransaction,
-        operationID: UUID,
-        now: Date = .now
-    ) throws {
-        modelContext.insert(
-            SmsReconstructedResult(
-                operationID: operationID,
-                contractVersion: "pocketfinancer.processing-result/2",
-                recognitionDecision: "posted",
-                semanticResultJSON: try CanonicalJSON.string(result),
-                createdAt: now
-            ))
-        try saveOrRollback()
-    }
-
-    func recordV4NormalizedResult(
+    func recordNormalizedResult(
         operationID: UUID,
         semanticResultJSON: String,
-        decision: String
+        decision: String?
     ) throws {
         let targetID = operationID
         guard
@@ -1273,18 +1431,20 @@ actor SmsProcessingStore {
             SmsReconstructedResult(
                 operationID: operationID,
                 contractVersion: "pocketfinancer.processing-result/3",
-                recognitionDecision: decision,
+                recognitionDecision: decision ?? "",
                 semanticResultJSON: semanticResultJSON
-            ))
+            )
+        )
         try saveOrRollback()
     }
 
-    func recordV4GateDecision(
+    func recordGateDecision(
         _ claim: SmsOperationClaim,
         result: String,
         primaryReason: String,
         checksJSON: String,
         accountResolutionJSON: String,
+        rolloutMode: String = "automatic",
         now: Date = .now
     ) throws {
         _ = try requireOwned(claim, now: now)
@@ -1303,17 +1463,23 @@ actor SmsProcessingStore {
                 primaryReason: primaryReason,
                 checksJSON: checksJSON,
                 accountResolutionJSON: accountResolutionJSON,
-                rolloutMode: "review_only",
+                rolloutMode: rolloutMode,
                 createdAt: now
-            ))
+            )
+        )
         try saveOrRollback()
     }
 
-    func v4DuplicateStatus(
+    func duplicateStatus(
         operationID: UUID,
         sourceID: UUID,
         stableEventID: UUID,
-        transactionFingerprint: String
+        accountID: UUID?,
+        direction: String,
+        minorUnits: Int64,
+        currency: String,
+        occurredAt: Date,
+        windowSeconds: TimeInterval = SmsContractAssets.duplicateWindowSeconds
     ) throws -> String {
         let operations = try modelContext.fetch(FetchDescriptor<SmsProcessingOperation>())
             .filter { $0.id != operationID }
@@ -1323,25 +1489,152 @@ actor SmsProcessingStore {
         }) {
             return "already_persisted"
         }
+        let persistedForSource = try modelContext.fetch(
+            FetchDescriptor<Transaction>(predicate: #Predicate { $0.sourceAlertID == sourceID })
+        )
+        if !persistedForSource.isEmpty {
+            return "already_persisted"
+        }
         if operations.contains(where: {
             $0.state != .discarded
                 && ($0.sourceAlertID == sourceID || $0.stableEventID == stableEventID)
         }) {
             return "possible_duplicate"
         }
-        let results = try modelContext.fetch(FetchDescriptor<SmsReconstructedResult>())
-            .filter { $0.operationID != operationID }
-        for result in results {
-            guard let json = result.semanticResultJSON,
-                let root = try? JSONSerialization.jsonObject(
-                    with: Data(json.utf8)
-                ) as? [String: Any],
-                let duplicate = root["duplicate_assessment"] as? [String: Any],
-                duplicate["transaction_fingerprint"] as? String == transactionFingerprint
-            else { continue }
-            return "possible_duplicate"
+        guard let accountID else { return "clear" }
+        let targetOperationID = operationID
+        let excludedTransactionIDs = Set(
+            try modelContext.fetch(
+                FetchDescriptor<SmsTransactionRevision>(
+                    predicate: #Predicate { $0.operationID == targetOperationID }
+                )
+            ).map(\.transactionID)
+        )
+        let normalizedCurrency = currency.uppercased()
+        let transactions = try modelContext.fetch(FetchDescriptor<Transaction>())
+        let hasRecentMatch = transactions.contains { tx in
+            guard tx.sourceAlertID != sourceID,
+                !excludedTransactionIDs.contains(tx.id),
+                tx.accountID == accountID,
+                tx.directionRawValue == direction,
+                tx.amountMinorUnits == minorUnits,
+                tx.currencyCode.uppercased() == normalizedCurrency
+            else { return false }
+            return abs(tx.occurredAt.timeIntervalSince(occurredAt)) <= windowSeconds
         }
-        return "clear"
+        return hasRecentMatch ? "possible_duplicate" : "clear"
+    }
+
+    func persistAutomaticTransaction(
+        _ claim: SmsOperationClaim,
+        extraction: SmsExtractedTransaction,
+        accountID: UUID,
+        operation: SmsOperationSnapshot,
+        now: Date = .now
+    ) throws -> UUID {
+        let persistedOperation = try requireOwned(claim, now: now)
+        let sourceID = persistedOperation.sourceAlertID
+        guard sourceID == operation.sourceID else {
+            throw SmsProcessingStoreError.configurationMismatch
+        }
+        let occurredAt = Date(
+            timeIntervalSince1970: TimeInterval(operation.configuration.receivedTimestamp.epochMs) / 1_000
+        )
+        let duplicateState = try duplicateStatus(
+            operationID: operation.operationID,
+            sourceID: sourceID,
+            stableEventID: operation.stableEventID,
+            accountID: accountID,
+            direction: extraction.direction.rawValue,
+            minorUnits: extraction.minorUnits,
+            currency: extraction.currency,
+            occurredAt: occurredAt
+        )
+        guard duplicateState == "clear" else {
+            throw SmsProcessingStoreError.stateConflict
+        }
+        guard
+            let alert = try modelContext.fetch(
+                FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == sourceID })
+            ).first,
+            !alert.rawBody.isEmpty,
+            alert.transactionID == nil
+        else { throw SmsProcessingStoreError.stateConflict }
+        let targetAccountID = accountID
+        guard
+            let account = try modelContext.fetch(
+                FetchDescriptor<Account>(predicate: #Predicate { $0.id == targetAccountID })
+            ).first
+        else { throw SmsProcessingStoreError.invalidCommand }
+        let stableEventID = persistedOperation.stableEventID
+        let existingRevisions = try modelContext.fetch(
+            FetchDescriptor<SmsTransactionRevision>(
+                predicate: #Predicate {
+                    ($0.sourceAlertID == sourceID || $0.stableEventID == stableEventID)
+                        && $0.isCurrentProjection
+                }
+            )
+        )
+        guard existingRevisions.isEmpty else { throw SmsProcessingStoreError.stateConflict }
+        guard
+            let direction = TransactionDirection(rawValue: extraction.direction.rawValue),
+            let scale = CurrencyFormatter.supportedScales[extraction.currency]
+        else { throw SmsProcessingStoreError.invalidCommand }
+        let merchant = extraction.counterparty ?? "Unspecified counterparty"
+        let transaction = Transaction(
+            amountMinorUnits: extraction.minorUnits,
+            currencyCode: extraction.currency,
+            merchant: merchant,
+            occurredAt: occurredAt,
+            direction: direction,
+            accountID: account.id,
+            accountLabel: account.name,
+            isEdited: false,
+            parserName: SmsContractAssets.releaseID,
+            reviewState: .confirmed,
+            sourceAlertID: sourceID,
+            amountEvidenceText: extraction.amountSpan.text,
+            dateEvidenceText: nil,
+            now: now
+        )
+        modelContext.insert(transaction)
+        alert.transactionID = transaction.id
+        alert.status = .imported
+        alert.lastErrorCode = nil
+        alert.rejectionCode = nil
+        alert.parserName = SmsContractAssets.releaseID
+        alert.updatedAt = now
+        let revision = SmsTransactionRevision(
+            transactionID: transaction.id,
+            sourceAlertID: sourceID,
+            stableEventID: stableEventID,
+            revision: 0,
+            previousRevisionID: nil,
+            operationID: operation.operationID,
+            feedbackActionID: nil,
+            amountMinorUnits: extraction.minorUnits,
+            currencyCode: extraction.currency,
+            currencyScale: scale,
+            direction: direction.rawValue,
+            merchant: merchant,
+            accountID: account.id,
+            occurredAt: occurredAt,
+            provenance: "automatic_grounded_extraction",
+            isCurrentProjection: true,
+            createdAt: now
+        )
+        modelContext.insert(revision)
+        persistedOperation.state = .persisted
+        persistedOperation.transitionSequence += 1
+        persistedOperation.ownerToken = nil
+        persistedOperation.claimExpiresAt = nil
+        persistedOperation.settledAt = now
+        persistedOperation.updatedAt = now
+        persistedOperation.settlementReceiptJSON = try CanonicalJSON.string(
+            PersistedSettlement(operationID: operation.operationID, transactionIDs: [transaction.id])
+        )
+        try saveOrRollback()
+        return transaction.id
     }
 
     func recordGateDecision(
@@ -1380,6 +1673,7 @@ actor SmsProcessingStore {
 
     func settleDiscarded(
         _ claim: SmsOperationClaim,
+        retentionState: String,
         reason: String,
         now: Date = .now
     ) throws {
@@ -1390,6 +1684,25 @@ actor SmsProcessingStore {
         ).first {
             alert.eraseSensitiveEvidence()
             alert.status = .rejected
+            alert.rejectionCode = retentionState
+            alert.lastErrorCode = reason
+            alert.updatedAt = now
+        }
+        let targetOperationID = operation.id
+        for analysis in try modelContext.fetch(
+            FetchDescriptor<SmsProcessingAnalysis>(
+                predicate: #Predicate { $0.operationID == targetOperationID }
+            )
+        ) {
+            analysis.canonicalJSON = "{}"
+        }
+        for attempt in try modelContext.fetch(
+            FetchDescriptor<SmsSelectorAttempt>(
+                predicate: #Predicate { $0.operationID == targetOperationID }
+            )
+        ) {
+            attempt.requestJSON = "{}"
+            attempt.rawOutput = retentionState == "tombstoned_none" ? #"{"decision":"none"}"# : nil
         }
         operation.state = .discarded
         operation.transitionSequence += 1
@@ -1397,7 +1710,9 @@ actor SmsProcessingStore {
         operation.claimExpiresAt = nil
         operation.settledAt = now
         operation.updatedAt = now
-        operation.settlementReceiptJSON = reason
+        operation.settlementReceiptJSON = try CanonicalJSON.string(
+            TombstoneSettlement(retentionState: retentionState, reason: reason)
+        )
         try saveOrRollback()
     }
 
@@ -1633,4 +1948,37 @@ nonisolated private struct ProjectionFeedbackHashPayload: Codable {
     let action: String
     let correctionsJSON: String
     let previousEventHash: String?
+}
+
+nonisolated private struct LegacyV2Proposal: Decodable {
+    struct EvidenceRef: Decodable {
+        let text: String
+    }
+
+    let minorUnits: Int64
+    let currency: String
+    let direction: String
+    let amountCandidateID: String
+    let counterpartyEvidence: EvidenceRef?
+    let occurredAtEpochMilliseconds: Int64?
+}
+
+nonisolated private struct TombstoneSettlement: Codable {
+    let retentionState: String
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case retentionState = "retention_state"
+        case reason
+    }
+}
+
+nonisolated private struct PersistedSettlement: Codable {
+    let operationID: UUID
+    let transactionIDs: [UUID]
+
+    enum CodingKeys: String, CodingKey {
+        case operationID = "operation_id"
+        case transactionIDs = "transaction_ids"
+    }
 }

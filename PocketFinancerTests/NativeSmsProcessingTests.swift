@@ -3,14 +3,14 @@ import XCTest
 
 @testable import PocketFinancer
 
-private struct FixedDirectSelector: DirectCandidateSelecting {
+private struct FixedExtractor: FoundationSmsExtracting {
     let rawOutput: String
 
-    func select(source _: String, analysis _: SmsAnalysis) async throws -> DirectSelectorResponse {
+    func extract(requestJSON: String) async throws -> DirectSelectorResponse {
         DirectSelectorResponse(
             rawOutput: rawOutput,
-            runtimeProfileJSON: #"{"generation_mode":"DIRECT_NON_THINKING"}"#,
-            requestJSON: #"{"contract":"pocketfinancer.grounded-candidate-selector-input/1"}"#,
+            runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
+            requestJSON: requestJSON,
             completion: "complete"
         )
     }
@@ -18,234 +18,85 @@ private struct FixedDirectSelector: DirectCandidateSelecting {
 
 @MainActor
 final class NativeSmsProcessingTests: XCTestCase {
-    func testNativeSmsV4BundleUsesSuccessorConfigWithoutModelFileHash() throws {
-        let binding = try NativeSmsV4Assets.verify()
-        XCTAssertEqual(binding.releaseID, "native-integration-v4")
-        XCTAssertEqual(binding.manifestSHA256, NativeSmsV4Assets.manifestSHA256)
-        XCTAssertEqual(binding.artifactsByContract.count, 44)
-        XCTAssertEqual(
-            binding.artifactsByContract["pocketfinancer.processing-config/4"]?.sha256,
-            NativeSmsV4Assets.processingConfigSHA256
-        )
-        let extractorSchema = try XCTUnwrap(
-            binding.artifactsByContract["pocketfinancer.processing-config/4"]
-        )
-        XCTAssertEqual(
-            extractorSchema.path,
-            "configs/sms_processing/contracts/v4/processing-config.schema.json"
-        )
-        let configuration = SmsV4OperationConfiguration(
-            operationID: UUID(), parentOperationID: nil, sourceID: UUID(),
-            trigger: "diagnostic", primaryCurrency: "INR",
+    func testContractAssetsVerifyManifestPromptsSchemasAndProfiles() throws {
+        let bundle = try SmsContractAssets.verify()
+
+        XCTAssertEqual(bundle.releaseID, "pocketfinancer.sms-pipeline/1")
+        XCTAssertEqual(bundle.duplicateWindowMilliseconds, 300_000)
+        XCTAssertEqual(bundle.artifactsByPath.count, 19)
+        let prompt = try SmsContractAssets.extractorPrompt()
+        XCTAssertTrue(prompt.contains("pocketfinancer.apple-fm-extractor-prompt/1"))
+        let flatSchema = try SmsContractAssets.appleFlatSchema()
+        let required = try XCTUnwrap(flatSchema["required"] as? [String])
+        XCTAssertEqual(required.count, 18)
+        let codes = try SmsContractAssets.currentISO4217CurrencyCodes()
+        XCTAssertTrue(codes.contains("INR"))
+        XCTAssertTrue(codes.contains("USD"))
+    }
+
+    func testOperationConfigurationUsesAutomaticRolloutAndFlatGuidedTransport() throws {
+        let binding = try SmsContractAssets.verify()
+        let configuration = try SmsOperationConfiguration(
+            operationID: UUID(),
+            parentOperationID: nil,
+            sourceID: UUID(),
+            trigger: "diagnostic",
+            primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
             receivedAt: TestFixtures.receivedAt,
             admissionAt: TestFixtures.receivedAt,
-            timezoneID: "UTC", binding: binding,
-            extractorEligible: true, createdAt: TestFixtures.receivedAt
+            timezoneID: "UTC",
+            binding: binding,
+            extractorEligible: true,
+            createdAt: TestFixtures.receivedAt
         )
         let payload = try configuration.payloadJSON()
         let hash = CanonicalJSON.sha256(payload)
         let document = try XCTUnwrap(
             JSONSerialization.jsonObject(
                 with: Data((try configuration.documentJSON(configHash: hash)).utf8)
-            ) as? [String: Any])
+            ) as? [String: Any]
+        )
         let extractor = try XCTUnwrap(document["extractor"] as? [String: Any])
+        let policy = try XCTUnwrap(document["persistence_policy"] as? [String: Any])
+        XCTAssertEqual(document["contract"] as? String, "pocketfinancer.sms-pipeline/1")
         XCTAssertTrue(document["parent_operation_id"] is NSNull)
         XCTAssertTrue(extractor["ineligibility_reason"] is NSNull)
         XCTAssertEqual(extractor["model_identity_kind"] as? String, "system_managed_runtime")
         XCTAssertTrue(extractor["model_file_sha256"] is NSNull)
+        XCTAssertEqual(extractor["wire_transport"] as? String, "apple_fm_guided_flat")
+        XCTAssertEqual(extractor["grammar_enabled"] as? Bool, false)
+        XCTAssertTrue(extractor["grammar_sha256"] is NSNull)
+        XCTAssertEqual(policy["rollout_mode"] as? String, "automatic")
         XCTAssertEqual(document["config_hash"] as? String, hash)
     }
 
-    func testNativeSmsV3BundleRetainsManifestPathsAndBytes() throws {
-        let binding = try NativeSmsV3Assets.verify()
-
-        XCTAssertEqual(binding.releaseID, NativeSmsV3Assets.releaseID)
-        XCTAssertEqual(binding.manifestSHA256, NativeSmsV3Assets.manifestSHA256)
-        XCTAssertEqual(
-            NativeSmsV3AssetIntegrityError.reasonCode,
-            "configuration_integrity"
-        )
-        XCTAssertEqual(
-            binding.artifactsByContract.count,
-            NativeSmsV3Assets.expectedArtifactCount
-        )
-        XCTAssertEqual(
-            binding.artifactsByContract["pocketfinancer.sms-extractor/1"]?.path,
-            "configs/sms_processing/contracts/v3/sms-extractor.schema.json"
-        )
-        XCTAssertEqual(
-            binding.artifactsByContract[
-                "pocketfinancer.sanitized-extractor-golden/1"
-            ]?.path,
-            "tests/sms_processing/golden/extractor-v1/sanitized-vectors.json"
-        )
-    }
-
-    func testCurrentSelectorConfigurationHasNoWallClockDeadline() {
-        let configuration = SmsOperationConfiguration(
-            operationID: UUID(),
-            sourceID: UUID(),
-            trigger: "diagnostic",
-            createdAt: TestFixtures.receivedAt,
-            primaryCurrency: "INR",
-            enabledProfiles: ["core-en", "india"],
-            sourceTimestamp: TestFixtures.receivedAt,
-            sourceTimestampProvenance: "acquisition_supplied_message_time",
-            admissionTimestamp: TestFixtures.receivedAt,
-            timezoneIdentifier: "UTC",
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime"
-        )
-
-        XCTAssertEqual(configuration.contract, "pocketfinancer.processing-config/2")
-        XCTAssertEqual(configuration.releaseID, "native-integration-v2")
-        XCTAssertEqual(
-            configuration.validationProfile,
-            "pocketfinancer.selector-validation-profile/3"
-        )
-        XCTAssertEqual(configuration.parserDeadlineMilliseconds, 0)
-    }
     func testPrimaryCurrencyRequiresExplicitConfirmation() {
         let defaults = UserDefaults.standard
         let previousCode = defaults.object(forKey: PrimaryCurrencySettings.key)
-        let previousConfirmation = defaults.object(
-            forKey: PrimaryCurrencySettings.confirmationKey
-        )
+        let previousConfirmed = defaults.object(forKey: PrimaryCurrencySettings.confirmationKey)
         defer {
-            defaults.removeObject(forKey: PrimaryCurrencySettings.key)
-            defaults.removeObject(forKey: PrimaryCurrencySettings.confirmationKey)
             if let previousCode {
                 defaults.set(previousCode, forKey: PrimaryCurrencySettings.key)
+            } else {
+                defaults.removeObject(forKey: PrimaryCurrencySettings.key)
             }
-            if let previousConfirmation {
-                defaults.set(
-                    previousConfirmation,
-                    forKey: PrimaryCurrencySettings.confirmationKey
-                )
+            if let previousConfirmed {
+                defaults.set(previousConfirmed, forKey: PrimaryCurrencySettings.confirmationKey)
+            } else {
+                defaults.removeObject(forKey: PrimaryCurrencySettings.confirmationKey)
             }
         }
         defaults.removeObject(forKey: PrimaryCurrencySettings.key)
         defaults.removeObject(forKey: PrimaryCurrencySettings.confirmationKey)
-        defaults.set("USD", forKey: PrimaryCurrencySettings.key)
 
         XCTAssertNil(PrimaryCurrencySettings.confirmedCode)
-        XCTAssertEqual(PrimaryCurrencySettings.currentCode, "USD")
-
+        PrimaryCurrencySettings.set("INR")
+        XCTAssertNil(PrimaryCurrencySettings.confirmedCode)
         PrimaryCurrencySettings.confirm("USD")
-
         XCTAssertEqual(PrimaryCurrencySettings.confirmedCode, "USD")
-        XCTAssertEqual(PrimaryCurrencySettings.enabledProfiles, ["core-en"])
     }
 
-    func testAllFrozenAnalyzerAndTriageVectorsMatchCandidateIDsAndReasons() throws {
-        let url = try XCTUnwrap(
-            Bundle.main.url(forResource: "golden-parity-v1", withExtension: "json")
-        )
-        let root = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
-        )
-        let vectors = try XCTUnwrap(root["vectors"] as? [[String: Any]])
-        XCTAssertFalse(vectors.isEmpty)
-        for vector in vectors {
-            let id = try XCTUnwrap(vector["id"] as? String)
-            let source = try XCTUnwrap(vector["source"] as? String)
-            let operationID = try XCTUnwrap(
-                UUID(uuidString: try XCTUnwrap(vector["operation_id"] as? String))
-            )
-            let expectedJSON = try XCTUnwrap(vector["expected_analysis_json"] as? String)
-            let expected = try XCTUnwrap(
-                JSONSerialization.jsonObject(with: Data(expectedJSON.utf8)) as? [String: Any]
-            )
-            let expectedCandidates = try XCTUnwrap(expected["candidates"] as? [[String: Any]])
-            let configuration = SmsOperationConfiguration(
-                operationID: operationID,
-                sourceID: UUID(),
-                trigger: "diagnostic",
-                createdAt: TestFixtures.receivedAt,
-                primaryCurrency: "INR",
-                enabledProfiles: ["core-en", "india"],
-                sourceTimestamp: Date(timeIntervalSince1970: 1_700_000_000),
-                sourceTimestampProvenance: "acquisition_supplied_message_time",
-                admissionTimestamp: TestFixtures.receivedAt,
-                timezoneIdentifier: "UTC",
-                selectorModelIdentifier: "test-selector",
-                selectorRuntimeVersion: "test-runtime"
-            )
-            let snapshot = SmsOperationSnapshot(
-                operationID: operationID,
-                parentOperationID: nil,
-                stableEventID: UUID(),
-                configuration: configuration,
-                configurationJSON: "{}",
-                configurationHash: try XCTUnwrap(vector["operation_config_hash"] as? String)
-            )
-            let actual = try StructuralSmsAnalyzer().analyze(source: source, operation: snapshot)
-            XCTAssertEqual(try actual.canonicalJSON, expectedJSON, id)
-            XCTAssertEqual(
-                try FoundationDirectCandidateSelector.requestJSON(
-                    source: source, analysis: actual
-                ),
-                vector["expected_selector_input_json"] as? String,
-                id
-            )
-            XCTAssertEqual(actual.analysisID, expected["analysis_id"] as? String, id)
-            XCTAssertEqual(
-                actual.candidates.map(\.id),
-                expectedCandidates.compactMap { $0["candidate_id"] as? String },
-                id
-            )
-            XCTAssertEqual(actual.reasonCodes, expected["reason_codes"] as? [String], id)
-            let expectedTriage = try XCTUnwrap(vector["expected_triage"] as? [String: Any])
-            let actualTriage = SmsTriageEvaluator().evaluate(actual)
-            XCTAssertEqual(actualTriage.disposition.rawValue, expectedTriage["disposition"] as? String, id)
-            XCTAssertEqual(actualTriage.selectorAction.rawValue, expectedTriage["selector_action"] as? String, id)
-            XCTAssertEqual(actualTriage.reasonCodes, expectedTriage["reason_codes"] as? [String], id)
-        }
-    }
-
-    func testUnicodeGoldenVectorPreservesCodePointAndUtf8OffsetsAndCandidateIDs() throws {
-        let source = "ＩＮＲ １０ was credited to account **１２３４ from SYNTH FRIEND."
-        let operationID = try XCTUnwrap(UUID(uuidString: "11111111-1111-4111-8111-111111111111"))
-        let configuration = SmsOperationConfiguration(
-            operationID: operationID,
-            sourceID: UUID(),
-            trigger: "diagnostic",
-            createdAt: TestFixtures.receivedAt,
-            primaryCurrency: "INR",
-            enabledProfiles: ["core-en", "india"],
-            sourceTimestamp: TestFixtures.receivedAt,
-            sourceTimestampProvenance: "acquisition_supplied_message_time",
-            admissionTimestamp: TestFixtures.receivedAt,
-            timezoneIdentifier: "UTC",
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime"
-        )
-        let snapshot = SmsOperationSnapshot(
-            operationID: operationID,
-            parentOperationID: nil,
-            stableEventID: UUID(),
-            configuration: configuration,
-            configurationJSON: "{}",
-            configurationHash: String(repeating: "a", count: 64)
-        )
-
-        let analysis = try StructuralSmsAnalyzer().analyze(source: source, operation: snapshot)
-
-        XCTAssertEqual(analysis.analysisID, "549bc32c755f4a2e2e2787cd")
-        XCTAssertEqual(
-            analysis.candidates.map(\.id),
-            [
-                "amt_4415d29511db", "dir_c50e7a2f848d", "acc_5d9856de7f22",
-                "cp_9c3f30764525", "acc_13e84438cabe", "cp_39f97723fe39",
-            ]
-        )
-        let amountEvidence = try XCTUnwrap(analysis.candidates.first?.evidence)
-        XCTAssertEqual(amountEvidence.endCharacter, 6)
-        XCTAssertEqual(amountEvidence.endUTF8, 16)
-    }
-
-    @MainActor
     func testAnalyzerUsesExactMinorUnitsAndBlocksExpectedRefund() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
@@ -254,144 +105,49 @@ final class NativeSmsProcessingTests: XCTestCase {
         try context.save()
         let snapshot = try makeSnapshot(context: context, alert: alert)
 
-        let analysis = try StructuralSmsAnalyzer().analyze(source: alert.rawBody, operation: snapshot)
+        let analysis = try StructuralSmsAnalyzer().analyze(
+            source: alert.rawBody,
+            operation: snapshot
+        )
 
-        XCTAssertEqual(analysis.candidates.first(where: { $0.kind == .amount })?.value["minor_units"], "123450")
+        XCTAssertEqual(
+            analysis.candidates.first(where: { $0.kind == .amount })?.value["minor_units"],
+            "123450"
+        )
         XCTAssertTrue(analysis.reasonCodes.contains("expected_refund_not_posted"))
         XCTAssertEqual(analysis.completedEventCount, 0)
-        await Task.yield()
     }
 
-    @MainActor
-    func testStrictSelectorRejectsDuplicateKeysAndForeignCandidates() async throws {
+    func testCoordinatorAutoSavesPostedExtractionWithResolvedAccount() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
+        let account = Account(
+            name: "HDFC Savings",
+            bank: "HDFC Bank",
+            kind: .account,
+            suffix: "1234",
+            now: TestFixtures.receivedAt
+        )
+        context.insert(account)
         let alert = makeAlert(body: "INR 10.00 was paid from account **1234 at CAFE")
         context.insert(alert)
         try context.save()
         let snapshot = try makeSnapshot(context: context, alert: alert)
-        let analysis = try StructuralSmsAnalyzer().analyze(source: alert.rawBody, operation: snapshot)
-        let validator = GroundedSelectorValidator()
-
-        XCTAssertThrowsError(
-            try validator.validate(
-                rawOutput: #"{"decision":"none","decision":"posted"}"#,
-                analysis: analysis
-            )
-        ) { error in
-            XCTAssertEqual(error as? GroundedSelectorValidationError, .duplicateKey)
-        }
-        XCTAssertThrowsError(
-            try validator.validate(
-                rawOutput:
-                    #"{"decision":"posted","amount":"foreign","direction":"foreign","account":"foreign","counterparty":"foreign"}"#,
-                analysis: analysis
-            )
-        ) { error in
-            XCTAssertEqual(error as? GroundedSelectorValidationError, .unknownCandidate)
-        }
-        await Task.yield()
-    }
-
-    @MainActor
-    func testPersistenceGateRejectsTwoDirectionCandidatesInOneClause() async throws {
-        let database = try AppDatabase(inMemory: true)
-        let context = database.container.mainContext
-        let alert = makeAlert(body: "INR 10.00 was paid from account **1234 at CAFE")
-        context.insert(alert)
-        try context.save()
-        let snapshot = try makeSnapshot(context: context, alert: alert)
-        let original = try StructuralSmsAnalyzer().analyze(
-            source: alert.rawBody, operation: snapshot
+        let raw = try TestFixtures.strictPostedOutput(
+            for: alert.rawBody,
+            amountText: "INR 10.00",
+            amountValue: "10.00",
+            direction: "debit",
+            directionText: "paid",
+            accountReference: "**1234",
+            accountText: "**1234",
+            counterpartyText: "CAFE"
         )
-        let amount = try XCTUnwrap(original.candidates.first { $0.kind == .amount })
-        let direction = try XCTUnwrap(original.candidates.first { $0.kind == .direction })
-        let account = try XCTUnwrap(original.candidates.first { $0.kind == .account })
-        let counterparty = try XCTUnwrap(original.candidates.first { $0.kind == .counterparty })
-        let selection = GroundedSelectorResult(
-            decision: .posted,
-            posted: SelectorPostedSelection(
-                amountCandidateID: amount.id,
-                directionCandidateID: direction.id,
-                accountCandidateID: account.id,
-                counterpartyCandidateID: counterparty.id
-            )
-        )
-        let transaction = try SemanticReconstructor().reconstruct(
-            selection: selection, analysis: original, operation: snapshot
-        )
-        let duplicate = SmsCandidate(
-            id: "dir_duplicate",
-            kind: .direction,
-            clauseID: direction.clauseID,
-            evidence: direction.evidence,
-            explicitlyAbsent: false,
-            value: direction.value,
-            context: direction.context
-        )
-        let ambiguous = SmsAnalysis(
-            contract: original.contract,
-            analysisID: original.analysisID,
-            configurationHash: original.configurationHash,
-            sourceHash: original.sourceHash,
-            source: original.source,
-            clauses: original.clauses,
-            candidates: original.candidates + [duplicate],
-            cues: original.cues,
-            reasonCodes: original.reasonCodes,
-            completedEventCount: 1,
-            profileID: original.profileID,
-            primaryCurrency: original.primaryCurrency,
-            normalizedStructuralFingerprint: original.normalizedStructuralFingerprint,
-            currencyContextHash: original.currencyContextHash,
-            sourceTimestampEpochMilliseconds: original.sourceTimestampEpochMilliseconds,
-            sourceTimestampProvenance: original.sourceTimestampProvenance,
-            unicodeDatabaseVersion: original.unicodeDatabaseVersion,
-            clauseAnnotations: original.clauseAnnotations
-        )
-
-        let decision = AutomaticPersistenceGate().evaluate(
-            analysis: ambiguous,
-            triage: SmsTriageDecision(
-                disposition: .invoke,
-                selectorAction: .runNormal,
-                reasonCodes: ["invoke_grounded_single_event"]
-            ),
-            selection: selection,
-            transaction: transaction,
-            accountResolution: .unique(accountID: UUID()),
-            operation: snapshot,
-            claimOwnershipCurrent: true
-        )
-
-        XCTAssertEqual(decision.result, .multipleEvents)
-        XCTAssertEqual(
-            decision.checks.first { $0.check == "single_completed_event" }?.passed,
-            false
-        )
-        await Task.yield()
-    }
-
-    @MainActor
-    func testCoordinatorPersistsTraceAndRetainsPostedResultInShadowMode() async throws {
-        let database = try AppDatabase(inMemory: true)
-        let context = database.container.mainContext
-        let alert = makeAlert(body: "INR 10.00 was paid from account **1234 at CAFE")
-        context.insert(alert)
-        try context.save()
-        let snapshot = try makeSnapshot(context: context, alert: alert)
-        let analysis = try StructuralSmsAnalyzer().analyze(source: alert.rawBody, operation: snapshot)
-        let amount = try XCTUnwrap(analysis.candidates.first { $0.kind == .amount })
-        let direction = try XCTUnwrap(analysis.candidates.first { $0.kind == .direction })
-        let account = try XCTUnwrap(analysis.candidates.first { $0.kind == .account })
-        let counterparty = try XCTUnwrap(analysis.candidates.first { $0.kind == .counterparty })
-        let raw =
-            #"{"account":"\#(account.id)","amount":"\#(amount.id)","counterparty":"\#(counterparty.id)","decision":"posted","direction":"\#(direction.id)"}"#
         let store = SmsProcessingStore(modelContainer: database.container)
-        let coordinator = DefaultSmsProcessingCoordinator(
+        let coordinator = SmsProcessingCoordinator(
             store: store,
-            selector: FixedDirectSelector(rawOutput: raw),
-            accountResolver: { _ in .unique(accountID: UUID()) }
+            extractor: FixedExtractor(rawOutput: raw),
+            accountResolver: { _ in .unique(accountID: account.id) }
         )
 
         let outcome = await coordinator.process(
@@ -400,35 +156,207 @@ final class NativeSmsProcessingTests: XCTestCase {
                 admissionReceiptID: alert.id,
                 sourceDigest: CanonicalJSON.sha256(alert.rawBody)
             ),
-            operation: snapshot,
-            observer: NoOpSmsProcessingObserver()
+            operation: snapshot
         )
 
-        guard case .retainedForReview(_, _, let reasons) = outcome else {
-            return XCTFail("Expected shadow-mode review, got \(outcome)")
+        guard case .persisted(_, let transactionIDs, let alreadyCommitted) = outcome else {
+            return XCTFail("Expected automatic persistence, got \(outcome)")
         }
-        XCTAssertTrue(reasons.contains("persistence_blocked_by_rollout_mode"))
+        XCTAssertEqual(transactionIDs.count, 1)
+        XCTAssertFalse(alreadyCommitted)
+
+        let replayed = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(alert.rawBody)
+            ),
+            operation: snapshot
+        )
+        XCTAssertEqual(
+            replayed,
+            .persisted(
+                operationID: snapshot.operationID,
+                transactionIDs: transactionIDs,
+                alreadyCommitted: true
+            )
+        )
+
         let verification = ModelContext(database.container)
-        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsProcessingAnalysis>()).count, 1)
-        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsSelectorAttempt>()).count, 1)
-        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsReconstructedResult>()).count, 1)
-        let persistence = try XCTUnwrap(
+        let transactions = try verification.fetch(FetchDescriptor<Transaction>())
+        XCTAssertEqual(transactions.count, 1)
+        XCTAssertEqual(transactions.first?.id, transactionIDs.first)
+        XCTAssertEqual(transactions.first?.accountID, account.id)
+        XCTAssertEqual(transactions.first?.amountMinorUnits, 1_000)
+        XCTAssertEqual(transactions.first?.parserName, "pocketfinancer.sms-pipeline/1")
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsReviewCase>()).count, 0)
+        let decision = try XCTUnwrap(
             verification.fetch(FetchDescriptor<SmsPersistenceDecision>()).first
         )
-        XCTAssertEqual(persistence.resultRawValue, "blocked_by_mode")
-        XCTAssertEqual(persistence.primaryReason, "persistence_blocked_by_rollout_mode")
-        let checks = try JSONDecoder().decode(
-            [PersistenceGateCheck].self,
-            from: Data(persistence.checksJSON.utf8)
+        XCTAssertEqual(decision.resultRawValue, "eligible")
+        XCTAssertEqual(decision.primaryReason, "persistence_all_gates_passed")
+        XCTAssertEqual(decision.rolloutMode, "automatic")
+    }
+
+    func testCoordinatorRoutesFiveMinuteDuplicateToReview() async throws {
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let account = Account(
+            name: "Card 1234",
+            bank: "HDFC Bank",
+            kind: .card,
+            suffix: "1234",
+            now: TestFixtures.receivedAt
         )
-        XCTAssertEqual(checks.filter(\.passed).count, checks.count - 1)
+        context.insert(account)
+        let body = "INR 500.00 paid from account **1234 at Demo Store."
+        let first = makeAlert(body: body, receivedAt: TestFixtures.receivedAt)
+        let withinWindow = makeAlert(
+            body: body,
+            receivedAt: TestFixtures.receivedAt.addingTimeInterval(240)
+        )
+        let outsideWindow = makeAlert(
+            body: body,
+            receivedAt: TestFixtures.receivedAt.addingTimeInterval(301)
+        )
+        context.insert(first)
+        context.insert(withinWindow)
+        context.insert(outsideWindow)
+        try context.save()
+        let raw = try TestFixtures.strictPostedOutput(
+            for: body,
+            amountText: "INR 500.00",
+            amountValue: "500.00",
+            direction: "debit",
+            directionText: "paid",
+            accountReference: "**1234",
+            accountText: "**1234",
+            counterpartyText: "Demo Store"
+        )
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let coordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedExtractor(rawOutput: raw),
+            accountResolver: { _ in .unique(accountID: account.id) }
+        )
+
+        let firstSnapshot = try makeSnapshot(context: context, alert: first)
+        let firstOutcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: first.id,
+                admissionReceiptID: first.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: firstSnapshot
+        )
+        guard case .persisted = firstOutcome else {
+            return XCTFail("Expected first transaction to persist automatically")
+        }
+
+        let duplicateSnapshot = try makeSnapshot(context: context, alert: withinWindow)
+        let duplicateOutcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: withinWindow.id,
+                admissionReceiptID: withinWindow.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: duplicateSnapshot
+        )
+        guard case .retainedForReview(_, _, let reasons) = duplicateOutcome else {
+            return XCTFail("Expected 5-minute duplicate to retain for review")
+        }
+        XCTAssertTrue(reasons.contains("duplicate_possible"))
+
+        let laterSnapshot = try makeSnapshot(context: context, alert: outsideWindow)
+        let laterOutcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: outsideWindow.id,
+                admissionReceiptID: outsideWindow.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: laterSnapshot
+        )
+        guard case .persisted = laterOutcome else {
+            return XCTFail("Expected alert outside 5-minute window to auto-save")
+        }
+    }
+
+    func testCoordinatorCreatesBodyFreeTombstonesForPrefilterAndExtractorNone() async throws {
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let otpAlert = makeAlert(body: "Use 482910 as your OTP to log in.")
+        let balanceAlert = makeAlert(body: "Your HDFC card balance is INR 10,000.00.")
+        context.insert(otpAlert)
+        context.insert(balanceAlert)
+        try context.save()
+
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let coordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedExtractor(rawOutput: #"{"decision":"none"}"#),
+            accountResolver: { _ in .unresolved }
+        )
+
+        let otpSnapshot = try makeSnapshot(context: context, alert: otpAlert)
+        let otpOutcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: otpAlert.id,
+                admissionReceiptID: otpAlert.id,
+                sourceDigest: CanonicalJSON.sha256(otpAlert.rawBody)
+            ),
+            operation: otpSnapshot
+        )
         XCTAssertEqual(
-            checks.first { !$0.passed }?.reasonCode,
-            "persistence_blocked_by_rollout_mode"
+            otpOutcome,
+            .terminallyDiscarded(
+                operationID: otpSnapshot.operationID,
+                reason: "prefilter_otp_verification"
+            )
         )
-        XCTAssertFalse(try verification.fetch(FetchDescriptor<SmsProcessingTraceEvent>()).isEmpty)
-        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsReviewCase>()).count, 1)
-        XCTAssertTrue(try verification.fetch(FetchDescriptor<Transaction>()).isEmpty)
+
+        let balanceSnapshot = try makeSnapshot(context: context, alert: balanceAlert)
+        let balanceOutcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: balanceAlert.id,
+                admissionReceiptID: balanceAlert.id,
+                sourceDigest: CanonicalJSON.sha256(balanceAlert.rawBody)
+            ),
+            operation: balanceSnapshot
+        )
+        XCTAssertEqual(
+            balanceOutcome,
+            .terminallyDiscarded(
+                operationID: balanceSnapshot.operationID,
+                reason: "extractor_none"
+            )
+        )
+
+        let verification = ModelContext(database.container)
+        let alerts = try verification.fetch(FetchDescriptor<InboxAlert>())
+        XCTAssertTrue(alerts.allSatisfy { $0.rawBody.isEmpty && $0.status == .rejected })
+        XCTAssertEqual(
+            alerts.first { $0.id == otpAlert.id }?.rejectionCode,
+            "tombstoned_excluded"
+        )
+        XCTAssertEqual(
+            alerts.first { $0.id == balanceAlert.id }?.rejectionCode,
+            "tombstoned_none"
+        )
+        let operations = try verification.fetch(FetchDescriptor<SmsProcessingOperation>())
+        XCTAssertEqual(
+            operations.first { $0.id == otpSnapshot.operationID }?.retentionState,
+            "tombstoned_excluded"
+        )
+        XCTAssertEqual(
+            operations.first { $0.id == balanceSnapshot.operationID }?.retentionState,
+            "tombstoned_none"
+        )
+        let attempts = try verification.fetch(FetchDescriptor<SmsSelectorAttempt>())
+        XCTAssertEqual(attempts.count, 1)
+        XCTAssertEqual(attempts.first?.requestJSON, "{}")
+        let analyses = try verification.fetch(FetchDescriptor<SmsProcessingAnalysis>())
+        XCTAssertEqual(analyses.count, 1)
+        XCTAssertEqual(analyses.first?.canonicalJSON, "{}")
     }
 
     @MainActor
@@ -438,14 +366,13 @@ final class NativeSmsProcessingTests: XCTestCase {
             trigger: "test",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
-            selectorModelIdentifier: "test-selector",
-            selectorRuntimeVersion: "test-runtime",
+            extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
     }
 
     @MainActor
-    private func makeAlert(body: String) -> InboxAlert {
+    private func makeAlert(body: String, receivedAt: Date = TestFixtures.receivedAt) -> InboxAlert {
         InboxAlert(
             sourceIdentity: UUID().uuidString,
             contentDigest: CanonicalJSON.sha256(body),
@@ -453,7 +380,7 @@ final class NativeSmsProcessingTests: XCTestCase {
             sourceApplication: "Tests",
             sender: "SYNTH",
             rawBody: body,
-            receivedAt: TestFixtures.receivedAt
+            receivedAt: receivedAt
         )
     }
 }

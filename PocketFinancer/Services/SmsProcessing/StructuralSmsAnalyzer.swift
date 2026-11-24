@@ -9,21 +9,6 @@ struct StructuralSmsAnalyzer: Sendable {
             source: source,
             operationID: operation.operationID,
             configurationHash: operation.configurationHash,
-            primaryCurrency: operation.configuration.primaryCurrency,
-            enabledProfiles: operation.configuration.enabledProfiles,
-            sourceTimestampEpochMilliseconds: operation.configuration.sourceTimestampEpochMilliseconds,
-            sourceTimestampProvenance: operation.configuration.sourceTimestampProvenance
-        )
-    }
-
-    nonisolated func analyze(
-        source: String,
-        operation: SmsV4OperationSnapshot
-    ) throws -> SmsAnalysis {
-        try analyze(
-            source: source,
-            operationID: operation.operationID,
-            configurationHash: operation.configurationHash,
             primaryCurrency: operation.configuration.currencyContext.primaryCurrency,
             enabledProfiles: operation.configuration.currencyContext.enabledProfileIDs,
             sourceTimestampEpochMilliseconds: operation.configuration.receivedTimestamp.epochMs,

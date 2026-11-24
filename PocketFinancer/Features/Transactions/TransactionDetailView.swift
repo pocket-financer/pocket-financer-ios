@@ -272,8 +272,8 @@ private struct TransactionEditView: View {
 
     private func save() {
         guard
-            let minorUnits = try? AmountParser.minorUnits(
-                from: "\(transaction.currencyCode) \(amountText)",
+            let minorUnits = CurrencyFormatter.minorUnits(
+                fromMajorUnitText: amountText,
                 currencyCode: transaction.currencyCode
             )
         else {

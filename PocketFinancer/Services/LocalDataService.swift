@@ -34,6 +34,9 @@ struct LocalDataService {
             for receipt in try context.fetch(FetchDescriptor<SmsTraceImportReceipt>()) {
                 context.delete(receipt)
             }
+            for releaseState in try context.fetch(FetchDescriptor<SmsContractReleaseState>()) {
+                context.delete(releaseState)
+            }
             for alias in try context.fetch(FetchDescriptor<SmsAccountAlias>()) {
                 context.delete(alias)
             }

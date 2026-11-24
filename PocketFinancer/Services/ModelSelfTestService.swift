@@ -46,9 +46,9 @@ struct ModelSelfTestResult: Equatable, Identifiable, Sendable {
     var summary: String {
         if passed {
             return "Apple Foundation Models completed one strict SMS Extractor pass "
-                + "and the shadow gate retained it without a ledger write."
+                + "and routed it safely to review without a ledger write."
         }
-        return failure?.ownerMessage ?? "The local synthetic selector test did not pass."
+        return failure?.ownerMessage ?? "The local synthetic extractor test did not pass."
     }
 
     var message: String { summary }
@@ -108,7 +108,7 @@ enum ModelSelfTestService {
             )
             context.insert(alert)
             try context.save()
-            let snapshot = try SmsV4OperationSnapshotFactory(context: context).create(
+            let snapshot = try SmsOperationSnapshotFactory(context: context).create(
                 sourceAlertID: alert.id,
                 trigger: "diagnostic",
                 primaryCurrency: "INR",
@@ -116,10 +116,10 @@ enum ModelSelfTestService {
                 extractorEligibilityOverride: extractorEligibilityOverride,
                 now: startedAt
             )
-            let coordinator = SmsV4ProcessingCoordinator(
+            let coordinator = SmsProcessingCoordinator(
                 store: SmsProcessingStore(modelContainer: database.container),
                 extractor: extractor,
-                accountResolver: { _ in .unique(accountID: UUID()) }
+                accountResolver: { _ in .unresolved }
             )
             let outcome = await coordinator.process(
                 source: AdmittedMessageRef(
@@ -193,7 +193,7 @@ enum ModelSelfTestService {
                             ?? "synthetic_expectation_mismatch",
                         ownerMessage: "The synthetic strict extractor run was retained safely "
                             + "but did not produce the expected INR 500.00 debit.",
-                        isRetryable: attempt?.safeErrorCode == "runtime_unavailable"
+                        isRetryable: Self.isRetryableCode(attempt?.safeErrorCode)
                     )
             )
         } catch {
@@ -230,7 +230,7 @@ enum ModelSelfTestService {
         passed: Bool,
         startedAt: Date,
         receivedAt: Date,
-        snapshot: SmsV4OperationSnapshot,
+        snapshot: SmsOperationSnapshot,
         exactRequest: String,
         exactOutput: String?,
         outputCompletion: String,
@@ -260,5 +260,20 @@ enum ModelSelfTestService {
             failure: failure,
             apiLimitations: apiLimitations
         )
+    }
+
+    private static func isRetryableCode(_ code: String?) -> Bool {
+        guard let code else { return false }
+        return [
+            "runtime_unavailable",
+            TransactionParserError.modelUnavailable(.modelNotReady).safeCode,
+            TransactionParserError.modelUnavailable(.appleIntelligenceNotEnabled).safeCode,
+            TransactionParserError.modelUnavailable(.unknown).safeCode,
+            TransactionParserError.timedOut.safeCode,
+            TransactionParserError.cancelled.safeCode,
+            TransactionParserError.assetsUnavailable.safeCode,
+            TransactionParserError.rateLimited.safeCode,
+            TransactionParserError.concurrentRequests.safeCode,
+        ].contains(code)
     }
 }

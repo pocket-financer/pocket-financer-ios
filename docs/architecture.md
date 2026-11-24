@@ -4,107 +4,60 @@
 
 Pocket Financer cannot read the iOS Messages database. A user-created Shortcuts
 automation passes message content to `Import Transaction Alert`, which writes a
-protected SwiftData inbox record and returns promptly. Foreground processing then
-uses the versioned shared SMS contract owned by the sibling
-`pocket-financer-intelligence` repository.
+protected SwiftData `InboxAlert` record and returns promptly. Foreground processing
+then executes the single canonical SMS pipeline contract (`pocketfinancer.sms-pipeline/1`)
+synced from `pocket-financer-intelligence`.
 
-The local SLM is the central semantic classifier and extractor. Deterministic
-analysis supplies advisory cues and source spans; it is not an answer allowlist.
-The host owns strict parsing, Unicode-scalar grounding, exact money, account
-resolution, duplicates, receipt time, persistence, durable operation ownership,
-review, and recovery.
+`SmsPrefilter` (`sms-prefilter/1`) runs before model work and converts unambiguous
+non-financial messages into body-free `tombstoned_excluded` records (`rawBody = ""`).
+For remaining candidates, `StructuralSmsAnalyzer` attaches advisory cues/spans,
+`FoundationSmsExtractor` runs Apple Foundation Models using the 18-field guided flat
+schema (`apple-fm-flat.schema.json`), and `SmsExtractorValidator` enforces one JSON
+object, Unicode-scalar bounds/text equality, ISO-4217 currency markers, grounded
+direction cues, exact `Int64` minor units, and normalized account/counterparty references.
 
 ```mermaid
 flowchart LR
-    A["Shortcut message content"] --> B["Protected SwiftData inbox"]
-    B --> C["Advisory deterministic analysis"]
-    C --> D["Apple Foundation Models classification/extraction"]
-    D --> E["Strict parse + Unicode-scalar grounding"]
-    E --> F["Exact money + account + duplicate checks"]
-    F --> G["Versioned routing"]
-    G -->|"current v4 review-only"| H["Review"]
-    G -.->|"planned successor: complete valid"| I["Transactions"]
+    A["Shortcut message content"] --> B["Protected SwiftData InboxAlert"]
+    B --> C["SmsPrefilter (sms-prefilter/1)"]
+    C -->|"exclude"| T1["Tombstone (tombstoned_excluded)"]
+    C -->|"pass"| D["StructuralSmsAnalyzer + FoundationSmsExtractor"]
+    D --> E["SmsExtractorValidator + Account + 300s Duplicate Check"]
+    E -->|"none"| T2["Tombstone (tombstoned_none)"]
+    E -->|"posted + unique account + clear"| F["Transactions (automatic save)"]
+    E -->|"abstain / unresolved / ambiguous / duplicate / error"| G["Review (atomic account + alias on confirm)"]
 ```
 
-Saving precedes inference so App Intent interruption cannot silently lose an
-alert. Foreground launches drain retryable records serially.
+## Routing and settlement
 
-## Current and planned routing
-
-The native v4 path is implemented in source and is frozen in `review_only` mode.
-Every posted v4 result, including a complete valid uniquely resolved result,
-remains reviewable until owner confirmation.
-
-The planned additive successor contract will send a complete, strictly valid,
-uniquely resolved, non-duplicate posted result directly to Transactions. Only
-incomplete, invalid, ambiguous, abstained, interrupted, incompatible, or failed
-work will enter Review. A valid `none` decision is a separate non-transaction
-outcome. Stored v1-v4 operations keep their original routing.
+- Valid `posted` extractions that resolve to a unique confirmed `SmsAccountAlias` and clear
+  the 5-minute (`300` seconds) duplicate check automatically persist `Transaction`,
+  `SmsTransactionRevision`, and `.persisted` operation state.
+- Unresolved, ambiguous, abstained, invalid, interrupted, failed, or 300-second duplicate
+  extractions retain source evidence and create or reuse an `SmsReviewCase`. Confirming
+  or correcting in Review atomically saves the `Transaction`, creates or links the
+  `Account` and confirmed `SmsAccountAlias`, and records revision-bound `SmsUserFeedbackEvent`.
+- Valid `none` and prefilter-excluded operations erase sensitive SMS text into body-free
+  tombstones (`tombstoned_none`, `tombstoned_excluded`).
+- Stored historical SwiftData schemas V1–V7 migrate safely forward without inventing
+  missing historical audit fields.
 
 ## Layers
 
-- `Data`: versioned SwiftData schema, protected local configuration, migrations,
-  review/feedback state, and file policy.
-- `Domain`: shared-contract types, advisory analysis, strict extractor parser,
-  Unicode-scalar conversion, exact money, accounts, duplicates, and routing.
-- `Services`: orchestration, Foundation Models adapter, operation ownership,
-  retries, diagnostics, erasure, and recovery.
-- `Intents`: the smallest durable background-safe Shortcuts boundary.
-- `Features`: SwiftUI onboarding, Home, Transactions, Review, Settings, and
-  owner-visible processing details.
+- `Data`: versioned SwiftData schema (`PocketFinancerSchemaV1..V7`), protected store setup,
+  `SmsProcessingStore`, review/feedback/tombstone persistence, and file protection policy.
+- `Domain`: currency formatting, account/source identity normalization, and diagnostics code mapping.
+- `Services`: `SmsContractAssets`, `SmsPrefilter`, `StructuralSmsAnalyzer`,
+  `FoundationSmsExtractor`, `SmsExtractorValidator`, `GroundedAccountResolver`,
+  `SmsProcessingCoordinator`, `AlertIngestionService`, `ModelSelfTestService`, and erasure.
+- `Intents`: background-safe `ImportTransactionAlertIntent` durable inbox admission.
+- `Features`: SwiftUI onboarding, Home, Transactions, `ReviewCorrectionView` /
+  `GroundedReviewCorrectionView`, Settings, and simplified `AlertProcessingDetailView`.
 
-Tests inject model adapters and sanitized vectors; they never require or contain
-real financial alerts.
+## Provenance and erasure
 
-## Review and corrections
-
-Review shows the complete immutable SMS, read-only receipt time, stable reason
-codes, advisory analyzer evidence, and the model proposal. Amount, direction,
-account, and counterparty have accessible field-specific highlights. Exactly one
-native text selection is active at a time.
-
-Confirmation is one atomic local transaction. Owner corrections append
-revision-bound local feedback and never rewrite the historical model result or
-silently become canonical training labels.
-
-## Processing transparency
-
-Each attempt keeps source evidence, configuration/release identity, advisory
-analysis, exact request, observable generation snapshots, strict parser result,
-validation, routing, persistence, and later owner correction as distinct facts.
-Retries append attempts rather than rewriting history.
-
-Apple Foundation Models exposes cumulative structured-generation snapshots through
-the response stream. It does not expose decoded token pieces/IDs, hidden reasoning,
-logits, token counts, numeric confidence, KV-cache state, or an app-readable model
-artifact. The UI shows observable snapshots while generation is active and labels
-token-level information unavailable. It must not reconstruct or fabricate it.
-
-For v4 provenance, iOS uses `system_managed_runtime` and
-`model_file_sha256: null`, while recording the observable model identifier,
-runtime, OS, device, prompt, grammar, validation, and release. This is the
-evidence-backed resolution of the incompatible v3 file-hash requirement.
-
-## Schema and recovery
-
-Consecutive SwiftData migrations preserve existing alerts, accounts, transactions,
-operations, reviews, feedback, and observable generation evidence. Missing
-historical fields remain absent rather than being invented. Unsupported/newer
-stores are preserved and block access; production never deletes them or falls back
-to an empty in-memory store.
-
-Erase All Local Data invalidates active claims before deleting pipeline evidence,
-transactions, accounts, and inbox content. Suspended work cannot repopulate the
-store afterward. Sensitive source, prompts, outputs, spans, and identifiers never
-enter logs, telemetry, CI artifacts, screenshots, notifications, or issue reports.
-
-## Operating and verification model
-
-Shared contracts, vectors, and evaluators run from the WSL
-`pocket-financer-intelligence` checkout. This repository is built and tested on
-macOS with Xcode. The simulator covers UI/storage/migration behavior but does not prove
-Foundation Models generation. Physical iPhone validation remains mandatory.
-
-See [SMS processing next steps](sms-processing-next-steps.md),
-[processing transparency](processing-transparency.md), and
-[device validation](device-validation.md).
+For Apple Foundation Models provenance, iOS records `system_managed_runtime` with
+`model_file_sha256: null`, `wire_transport: "apple_fm_guided_flat"`,
+`grammar_enabled: false`, `grammar_sha256: null`, plus runtime, OS, prompt, and validation
+profile digests verified from `release-manifest.json`. Erase All Local Data invalidates
+active processing claims before removing pipeline models, transactions, accounts, and alerts.

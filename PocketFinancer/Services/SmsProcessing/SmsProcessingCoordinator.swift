@@ -1,66 +1,43 @@
 import Foundation
 
-protocol SmsProcessingCoordinating: Sendable {
-    func process(
-        source: AdmittedMessageRef,
-        operation: SmsOperationSnapshot,
-        observer: any SmsProcessingObserver
-    ) async -> SmsProcessingOutcome
-
-    func requestStop(operationID: UUID) async -> StopReceipt
-    func resolveReview(_ command: ReviewCommand) async throws -> ReviewReceipt
-}
-
-actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
+/// Runs prefilter -> structural advice -> flat guided SLM -> validation -> duplicate gate -> persistence.
+actor SmsProcessingCoordinator {
     private let store: SmsProcessingStore
-    private let selector: any DirectCandidateSelecting
+    private let extractor: any FoundationSmsExtracting
     private let analyzer = StructuralSmsAnalyzer()
-    private let triageEvaluator = SmsTriageEvaluator()
-    private let validator = GroundedSelectorValidator()
-    private let reconstructor = SemanticReconstructor()
-    private let gate = AutomaticPersistenceGate()
     private let accountResolver: @MainActor @Sendable (String?) throws -> SmsAccountResolution
 
     init(
         store: SmsProcessingStore,
-        selector: any DirectCandidateSelecting = FoundationDirectCandidateSelector(),
+        extractor: any FoundationSmsExtracting,
         accountResolver: @escaping @MainActor @Sendable (String?) throws -> SmsAccountResolution
     ) {
         self.store = store
-        self.selector = selector
+        self.extractor = extractor
         self.accountResolver = accountResolver
     }
 
     func process(
         source: AdmittedMessageRef,
         operation: SmsOperationSnapshot,
-        observer: any SmsProcessingObserver = NoOpSmsProcessingObserver()
-    ) async -> SmsProcessingOutcome {
-        await process(source: source, operation: operation, observer: observer, initialClaim: nil)
-    }
-
-    func process(
-        source: AdmittedMessageRef,
-        operation: SmsOperationSnapshot,
         observer: any SmsProcessingObserver = NoOpSmsProcessingObserver(),
-        initialClaim: SmsOperationClaim?
+        initialClaim: SmsOperationClaim? = nil
     ) async -> SmsProcessingOutcome {
-        guard
-            source.sourceID == operation.configuration.sourceID,
-            operation.parentOperationID == operation.configuration.parentOperationID,
-            CanonicalJSON.sha256(source.sourceID.uuidString.lowercased())
-                == operation.configuration.sourceReferenceHash,
-            operation.configuration.contract == "pocketfinancer.processing-config/2",
-            operation.configuration.releaseID == SmsOperationConfiguration.releaseID,
-            operation.configuration.generationMode == "DIRECT_NON_THINKING",
-            operation.configuration.decoding == "greedy",
-            operation.configuration.answerTokenLimit == 512,
-            operation.configuration.rawOutputByteLimit == 16_384,
-            operation.configuration.parserDeadlineMilliseconds == 0,
-            ["shadow", "review_only"].contains(operation.configuration.rolloutMode),
-            operation.operationID == operation.configuration.operationID,
-            (try? operation.configuration.sha256) == operation.configurationHash,
-            (try? operation.configuration.canonicalJSON) == operation.configurationJSON
+        guard let binding = try? SmsContractAssets.verify(),
+            source.sourceID == operation.sourceID,
+            operation.operationID.uuidString.lowercased() == operation.configuration.operationID,
+            operation.parentOperationID?.uuidString.lowercased() == operation.configuration.parentOperationID,
+            CanonicalJSON.sha256(source.sourceID.uuidString.lowercased()) == operation.configuration.sourceRefHash,
+            operation.configuration.contract == SmsContractAssets.releaseID,
+            operation.configuration.contractRelease.releaseID == SmsContractAssets.releaseID,
+            operation.configuration.contractRelease.manifestSHA256 == binding.manifestSHA256,
+            operation.configuration.extractor.modelIdentityKind == "system_managed_runtime",
+            operation.configuration.extractor.modelFileSHA256 == nil,
+            operation.configuration.extractor.wireTransport == "apple_fm_guided_flat",
+            !operation.configuration.extractor.grammarEnabled,
+            operation.configuration.extractor.grammarSHA256 == nil,
+            operation.configuration.persistencePolicy.rolloutMode == "automatic",
+            SmsProcessingJSON.configurationMatches(operation)
         else {
             return await retainWithoutClaim(
                 operation.operationID,
@@ -87,9 +64,7 @@ actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
                         try await Task.sleep(for: .seconds(15))
                         guard !Task.isCancelled else { return }
                         renewableClaim = try await store.heartbeat(renewableClaim)
-                    } catch {
-                        return
-                    }
+                    } catch { return }
                 }
             }
             defer { heartbeatTask.cancel() }
@@ -105,37 +80,54 @@ actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
                     observer: observer
                 )
             }
+            let prefilter = SmsPrefilter.evaluate(evidence.body)
+            if prefilter.decision == .exclude {
+                return try await settlePrefilterExcluded(
+                    &claim,
+                    prefilterReason: prefilter.reason,
+                    operation: operation,
+                    observer: observer
+                )
+            }
+            try await trace(&claim, "prefilter", "completed", ["prefilter_eligible"], observer)
             let analysis = try analyzer.analyze(source: evidence.body, operation: operation)
             try await store.recordAnalysis(analysis, operationID: operation.operationID)
             try await store.transition(claim, expected: .claimed, to: .analyzed)
             try await trace(&claim, "analysis", "completed", analysis.reasonCodes, observer)
-            let triage = triageEvaluator.evaluate(analysis)
+            // Advisory only: no deterministic triage result can bypass the extractor.
             try await store.transition(claim, expected: .analyzed, to: .triaged)
-            try await trace(&claim, "triage", "completed", triage.reasonCodes, observer)
-
-            if triage.disposition == .discard {
-                let reason =
-                    triage.reasonCodes.first { $0.hasPrefix("discard_") }
-                    ?? "discard_unambiguous_standalone_non_event"
-                try await trace(&claim, "settlement", "completed", [reason], observer)
-                try await store.settleDiscarded(claim, reason: reason)
-                return .terminallyDiscarded(
-                    operationID: operation.operationID, reason: reason
-                )
-            }
-            let shouldRunSelector = triage.selectorAction != .skip
-            guard shouldRunSelector else {
+            try await trace(&claim, "triage", "completed", analysis.reasonCodes, observer)
+            guard operation.configuration.extractor.eligible else {
                 return try await retain(
-                    &claim, operation: operation, reasons: triage.reasonCodes, observer: observer
+                    &claim,
+                    operation: operation,
+                    reasons: [
+                        operation.configuration.extractor.ineligibilityReason
+                            ?? "runtime_unavailable"
+                    ],
+                    observer: observer
                 )
             }
-
+            let request = try SmsProcessingJSON.request(
+                source: evidence.body,
+                sender: evidence.sender,
+                analysis: analysis,
+                configuration: operation.configuration
+            )
             try await store.transition(claim, expected: .triaged, to: .selectorRunning)
             try await trace(&claim, "selector_execution", "running", [], observer)
             let startedAt = Date.now
             let response: DirectSelectorResponse
             do {
-                response = try await selector.select(source: evidence.body, analysis: analysis)
+                // Exactly one invocation. Invalid output is never retried automatically.
+                response = try await extractor.extract(requestJSON: request)
+            } catch TransactionParserError.cancelled {
+                let receipt = try await store.stop(operationID: operation.operationID)
+                return .stopped(
+                    operationID: operation.operationID,
+                    reviewCaseID: receipt.reviewCaseID,
+                    reason: "operation_interrupted"
+                )
             } catch is CancellationError {
                 let receipt = try await store.stop(operationID: operation.operationID)
                 return .stopped(
@@ -143,81 +135,109 @@ actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
                     reviewCaseID: receipt.reviewCaseID,
                     reason: "operation_interrupted"
                 )
-            } catch {
-                let safeCode = "runtime_unavailable"
-                try await store.recordSelectorFailure(
-                    operationID: operation.operationID,
-                    runtimeProfileJSON: "{}", requestJSON: "{}",
-                    safeErrorCode: safeCode, startedAt: startedAt
+            } catch let error as TransactionParserError {
+                return try await failExtractor(
+                    &claim,
+                    code: error.safeCode,
+                    request: request,
+                    startedAt: startedAt,
+                    operation: operation,
+                    observer: observer
                 )
-                try await trace(&claim, "selector_execution", "failed", [safeCode], observer)
-                return try await retain(
-                    &claim, operation: operation, reasons: [safeCode],
+            } catch is SmsContractAssetError {
+                return try await failExtractor(
+                    &claim,
+                    code: SmsContractAssetError.reasonCode,
+                    request: request,
+                    startedAt: startedAt,
+                    operation: operation,
+                    observer: observer
+                )
+            } catch let error as SmsExtractorValidationError {
+                return try await failExtractor(
+                    &claim,
+                    code: error.reasonCode,
+                    request: request,
+                    startedAt: startedAt,
+                    operation: operation,
+                    observer: observer
+                )
+            } catch {
+                return try await failExtractor(
+                    &claim,
+                    code: "runtime_unavailable",
+                    request: request,
+                    startedAt: startedAt,
+                    operation: operation,
                     observer: observer
                 )
             }
             try await store.recordSelectorResponse(
-                operationID: operation.operationID, response: response, startedAt: startedAt
+                operationID: operation.operationID,
+                response: response,
+                startedAt: startedAt
             )
-            try await store.transition(claim, expected: .selectorRunning, to: .selectorRecorded)
-            try await trace(&claim, "selector_execution", "completed", [], observer)
-
-            let selection: GroundedSelectorResult
-            do {
-                selection = try validator.validate(
-                    rawOutput: response.rawOutput, analysis: analysis,
-                    byteLimit: operation.configuration.rawOutputByteLimit
-                )
-            } catch let error as GroundedSelectorValidationError {
+            guard response.completion == "complete" else {
                 try await store.markSelectorInvalid(
-                    operationID: operation.operationID, safeErrorCode: error.rawValue
-                )
-                try await trace(
-                    &claim, "selector_validation", "failed", [error.rawValue], observer
+                    operationID: operation.operationID,
+                    safeErrorCode: "runtime_output_truncated"
                 )
                 return try await retain(
-                    &claim, operation: operation, reasons: [error.rawValue], observer: observer
+                    &claim,
+                    operation: operation,
+                    reasons: ["runtime_output_truncated"],
+                    observer: observer
+                )
+            }
+            try await store.transition(claim, expected: .selectorRunning, to: .selectorRecorded)
+            try await trace(&claim, "selector_execution", "completed", [], observer)
+            let extraction: SmsExtractorResult
+            do {
+                extraction = try SmsExtractorValidator().validate(
+                    rawOutput: response.rawOutput,
+                    source: evidence.body,
+                    primaryCurrency: operation.configuration.currencyContext.primaryCurrency,
+                    enabledProfiles: operation.configuration.currencyContext.enabledProfileIDs
+                )
+            } catch let error as SmsExtractorValidationError {
+                try await store.markSelectorInvalid(
+                    operationID: operation.operationID,
+                    safeErrorCode: error.reasonCode
+                )
+                try await trace(&claim, "selector_validation", "failed", [error.reasonCode], observer)
+                return try await retain(
+                    &claim,
+                    operation: operation,
+                    reasons: [error.reasonCode],
+                    observer: observer
                 )
             }
             try await store.transition(claim, expected: .selectorRecorded, to: .validated)
             try await trace(&claim, "selector_validation", "completed", [], observer)
-
-            var reconstructed: ReconstructedSmsTransaction?
-            if selection.decision == .posted {
-                reconstructed = try reconstructor.reconstruct(
-                    selection: selection, analysis: analysis, operation: operation
-                )
-                try await store.recordReconstruction(
-                    reconstructed!, operationID: operation.operationID
-                )
-                try await store.transition(claim, expected: .validated, to: .reconstructed)
-                try await trace(&claim, "reconstruction", "completed", [], observer)
-            }
-            let accountResolution = try await accountResolver(reconstructed?.accountIdentifier)
-            try await trace(&claim, "account_resolution", "completed", [], observer)
             claim = try await store.heartbeat(claim)
-            let decision = gate.evaluate(
-                analysis: analysis, triage: triage, selection: selection,
-                transaction: reconstructed,
-                accountResolution: accountResolution, operation: operation,
-                claimOwnershipCurrent: true
-            )
-            try await store.recordGateDecision(
-                decision, accountResolution: accountResolution,
-                claim: claim, rolloutMode: operation.configuration.rolloutMode
-            )
-            try await trace(
-                &claim,
-                "persistence_gate",
-                "completed",
-                [decision.primaryReason],
-                observer
-            )
-            return try await retain(
-                &claim, operation: operation,
-                reasons: Array(Set(triage.reasonCodes + [decision.primaryReason])).sorted(),
-                observer: observer
-            )
+            switch extraction.decision {
+            case .none:
+                return try await settleNone(
+                    &claim,
+                    extraction: extraction,
+                    operation: operation,
+                    observer: observer
+                )
+            case .abstain:
+                return try await settleAbstain(
+                    &claim,
+                    extraction: extraction,
+                    operation: operation,
+                    observer: observer
+                )
+            case .posted:
+                return try await settlePosted(
+                    &claim,
+                    extraction: extraction,
+                    operation: operation,
+                    observer: observer
+                )
+            }
         } catch is CancellationError {
             if let receipt = try? await store.stop(operationID: operation.operationID) {
                 return .stopped(
@@ -233,23 +253,293 @@ actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
             )
         } catch {
             return await retainWithoutClaim(
-                operation.operationID, reasons: ["operation_interrupted"]
+                operation.operationID,
+                reasons: ["operation_interrupted"]
             )
         }
     }
 
-    func requestStop(operationID: UUID) async -> StopReceipt {
-        (try? await store.stop(operationID: operationID))
-            ?? StopReceipt(
-                operationID: operationID,
-                reviewCaseID: nil,
-                state: .interrupted,
-                committed: false
-            )
+    private func failExtractor(
+        _ claim: inout SmsOperationClaim,
+        code: String,
+        request: String,
+        startedAt: Date,
+        operation: SmsOperationSnapshot,
+        observer: any SmsProcessingObserver
+    ) async throws -> SmsProcessingOutcome {
+        try await store.recordSelectorFailure(
+            operationID: operation.operationID,
+            runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
+            requestJSON: request,
+            safeErrorCode: code,
+            startedAt: startedAt
+        )
+        try await trace(&claim, "selector_execution", "failed", [code], observer)
+        return try await retain(
+            &claim,
+            operation: operation,
+            reasons: [code],
+            observer: observer
+        )
     }
 
-    func resolveReview(_ command: ReviewCommand) async throws -> ReviewReceipt {
-        try await store.resolveReview(command)
+    private func settlePrefilterExcluded(
+        _ claim: inout SmsOperationClaim,
+        prefilterReason: SmsPrefilter.Reason,
+        operation: SmsOperationSnapshot,
+        observer: any SmsProcessingObserver
+    ) async throws -> SmsProcessingOutcome {
+        let primaryReason = "prefilter_\(prefilterReason.rawValue)"
+        let reasons = [primaryReason, "tombstoned_excluded"]
+        try await trace(&claim, "prefilter", "completed", reasons, observer)
+        let result = try SmsProcessingJSON.result(
+            status: "tombstoned_excluded",
+            extraction: nil,
+            operation: operation,
+            account: nil,
+            duplicate: nil,
+            gate: nil,
+            reasons: reasons
+        )
+        try await store.recordNormalizedResult(
+            operationID: operation.operationID,
+            semanticResultJSON: result,
+            decision: nil
+        )
+        try await trace(&claim, "settlement", "completed", reasons, observer)
+        try await store.settleDiscarded(
+            claim,
+            retentionState: "tombstoned_excluded",
+            reason: primaryReason
+        )
+        return .terminallyDiscarded(operationID: operation.operationID, reason: primaryReason)
+    }
+
+    private func settleNone(
+        _ claim: inout SmsOperationClaim,
+        extraction: SmsExtractorResult,
+        operation: SmsOperationSnapshot,
+        observer: any SmsProcessingObserver
+    ) async throws -> SmsProcessingOutcome {
+        let reasons = ["extractor_none", "tombstoned_none"]
+        let accountReason = "account_resolution_unresolved"
+        let rolloutMode = operation.configuration.persistencePolicy.rolloutMode
+        let gate = SmsProcessingJSON.gate(
+            posted: false,
+            accountReason: accountReason,
+            duplicateStatus: "clear",
+            rolloutMode: rolloutMode
+        )
+        let account = SmsProcessingJSON.account(.missing, reference: "")
+        let duplicate = SmsProcessingJSON.duplicate(
+            status: "clear",
+            operation: operation,
+            fingerprint: nil
+        )
+        try await recordResult(
+            &claim,
+            extraction: extraction,
+            status: "tombstoned_none",
+            operation: operation,
+            account: account,
+            duplicate: duplicate,
+            gate: gate,
+            reasons: reasons
+        )
+        try await trace(&claim, "reconstruction", "completed", [], observer)
+        try await store.recordGateDecision(
+            claim,
+            result: "not_posted",
+            primaryReason: "persistence_not_posted",
+            checksJSON: try SmsProcessingJSON.checksJSON(
+                posted: false,
+                accountReason: accountReason,
+                duplicateStatus: "clear",
+                rolloutMode: rolloutMode
+            ),
+            accountResolutionJSON: try SmsProcessingJSON.canonical(account),
+            rolloutMode: rolloutMode
+        )
+        try await trace(&claim, "persistence_gate", "completed", reasons, observer)
+        try await trace(&claim, "settlement", "completed", reasons, observer)
+        try await store.settleDiscarded(
+            claim,
+            retentionState: "tombstoned_none",
+            reason: "extractor_none"
+        )
+        return .terminallyDiscarded(operationID: operation.operationID, reason: "extractor_none")
+    }
+
+    private func settleAbstain(
+        _ claim: inout SmsOperationClaim,
+        extraction: SmsExtractorResult,
+        operation: SmsOperationSnapshot,
+        observer: any SmsProcessingObserver
+    ) async throws -> SmsProcessingOutcome {
+        let reasons = ["extractor_abstained"]
+        try await recordResult(
+            &claim,
+            extraction: extraction,
+            status: "review",
+            operation: operation,
+            account: nil,
+            duplicate: nil,
+            gate: nil,
+            reasons: reasons
+        )
+        try await trace(&claim, "reconstruction", "completed", [], observer)
+        return try await retain(
+            &claim,
+            operation: operation,
+            reasons: reasons,
+            observer: observer
+        )
+    }
+
+    private func settlePosted(
+        _ claim: inout SmsOperationClaim,
+        extraction: SmsExtractorResult,
+        operation: SmsOperationSnapshot,
+        observer: any SmsProcessingObserver
+    ) async throws -> SmsProcessingOutcome {
+        guard let transaction = extraction.transaction else {
+            throw SmsProcessingStoreError.configurationMismatch
+        }
+        let resolution = try await accountResolver(transaction.accountReference)
+        let accountReasons = SmsProcessingJSON.accountReasons(resolution)
+        try await trace(&claim, "account_resolution", "completed", accountReasons, observer)
+        let accountID: UUID? =
+            if case .unique(let value) = resolution {
+                value
+            } else {
+                nil
+            }
+        let fingerprint = CanonicalJSON.sha256(
+            "\(transaction.minorUnits)\0\(transaction.currency)\0"
+                + "\(transaction.direction.rawValue)\0\(accountID?.uuidString.lowercased() ?? "")\0"
+                + "\(operation.configuration.receivedTimestamp.epochMs)"
+        )
+        let occurredAt = Date(
+            timeIntervalSince1970: TimeInterval(operation.configuration.receivedTimestamp.epochMs) / 1_000
+        )
+        let duplicateStatus = try await store.duplicateStatus(
+            operationID: operation.operationID,
+            sourceID: operation.sourceID,
+            stableEventID: operation.stableEventID,
+            accountID: accountID,
+            direction: transaction.direction.rawValue,
+            minorUnits: transaction.minorUnits,
+            currency: transaction.currency,
+            occurredAt: occurredAt,
+            windowSeconds: SmsContractAssets.duplicateWindowSeconds
+        )
+        var reasons = accountReasons
+        switch duplicateStatus {
+        case "already_persisted": reasons.append("duplicate_already_persisted")
+        case "clear": break
+        default: reasons.append("duplicate_possible")
+        }
+        let rolloutMode = operation.configuration.persistencePolicy.rolloutMode
+        let account = SmsProcessingJSON.account(
+            resolution,
+            reference: transaction.accountReference
+        )
+        let duplicate = SmsProcessingJSON.duplicate(
+            status: duplicateStatus,
+            operation: operation,
+            fingerprint: fingerprint
+        )
+        let accountReason = accountReasons.first
+        let gate = SmsProcessingJSON.gate(
+            posted: true,
+            accountReason: accountReason,
+            duplicateStatus: duplicateStatus,
+            rolloutMode: rolloutMode
+        )
+        guard let gateResult = gate["result"] as? String,
+            let gateReason = gate["primary_reason"] as? String
+        else { throw SmsProcessingStoreError.configurationMismatch }
+        let isEligible = gateResult == "eligible" && accountID != nil
+        if reasons.isEmpty {
+            reasons =
+                isEligible
+                ? ["persistence_all_gates_passed"]
+                : [gateReason]
+        } else {
+            reasons = Array(Set(reasons)).sorted()
+        }
+        try await recordResult(
+            &claim,
+            extraction: extraction,
+            status: isEligible ? "eligible" : "review",
+            operation: operation,
+            account: account,
+            duplicate: duplicate,
+            gate: gate,
+            reasons: reasons
+        )
+        try await trace(&claim, "reconstruction", "completed", [], observer)
+        try await store.recordGateDecision(
+            claim,
+            result: gateResult,
+            primaryReason: gateReason,
+            checksJSON: try SmsProcessingJSON.checksJSON(
+                posted: true,
+                accountReason: accountReason,
+                duplicateStatus: duplicateStatus,
+                rolloutMode: rolloutMode
+            ),
+            accountResolutionJSON: try SmsProcessingJSON.canonical(account),
+            rolloutMode: rolloutMode
+        )
+        try await trace(&claim, "persistence_gate", "completed", reasons, observer)
+        if isEligible, let accountID {
+            try await trace(&claim, "settlement", "completed", ["persistence_all_gates_passed"], observer)
+            let transactionID = try await store.persistAutomaticTransaction(
+                claim,
+                extraction: transaction,
+                accountID: accountID,
+                operation: operation
+            )
+            return .persisted(
+                operationID: operation.operationID,
+                transactionIDs: [transactionID],
+                alreadyCommitted: false
+            )
+        }
+        return try await retain(
+            &claim,
+            operation: operation,
+            reasons: reasons,
+            observer: observer
+        )
+    }
+
+    private func recordResult(
+        _ claim: inout SmsOperationClaim,
+        extraction: SmsExtractorResult,
+        status: String,
+        operation: SmsOperationSnapshot,
+        account: [String: Any]?,
+        duplicate: [String: Any]?,
+        gate: [String: Any]?,
+        reasons: [String]
+    ) async throws {
+        let result = try SmsProcessingJSON.result(
+            status: status,
+            extraction: extraction,
+            operation: operation,
+            account: account,
+            duplicate: duplicate,
+            gate: gate,
+            reasons: reasons
+        )
+        try await store.recordNormalizedResult(
+            operationID: operation.operationID,
+            semanticResultJSON: result,
+            decision: extraction.decision.rawValue
+        )
+        try await store.transition(claim, expected: .validated, to: .reconstructed)
     }
 
     private func trace(
@@ -259,14 +549,22 @@ actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
         _ reasons: [String],
         _ observer: any SmsProcessingObserver
     ) async throws {
+        let safeReasons = Array(Set(reasons)).sorted()
         let receipt = try await store.appendTrace(
-            claim, stage: stage, status: status, reasonCodes: reasons
+            claim,
+            stage: stage,
+            status: status,
+            reasonCodes: safeReasons
         )
         await observer.didReceive(
             SmsProcessingObserverEvent(
-                operationID: claim.operationID, sequence: receipt.sequence,
-                stage: stage, status: status, reasonCodes: reasons
-            ))
+                operationID: claim.operationID,
+                sequence: receipt.sequence,
+                stage: stage,
+                status: status,
+                reasonCodes: safeReasons
+            )
+        )
     }
 
     private func retain(
@@ -275,21 +573,43 @@ actor DefaultSmsProcessingCoordinator: SmsProcessingCoordinating {
         reasons: [String],
         observer: any SmsProcessingObserver
     ) async throws -> SmsProcessingOutcome {
-        try await trace(&claim, "settlement", "retained", reasons, observer)
-        let reviewID = try await store.retainForReview(claim, reasons: reasons)
+        let safeReasons =
+            reasons.isEmpty
+            ? ["persistence_triage_requires_review"]
+            : Array(Set(reasons)).sorted()
+        try await trace(&claim, "settlement", "retained", safeReasons, observer)
+        let reviewID = try await store.retainForReview(claim, reasons: safeReasons)
         return .retainedForReview(
-            operationID: operation.operationID, reviewCaseID: reviewID, reasons: reasons
+            operationID: operation.operationID,
+            reviewCaseID: reviewID,
+            reasons: safeReasons
         )
     }
 
-    private func retainWithoutClaim(_ operationID: UUID, reasons: [String]) async -> SmsProcessingOutcome {
+    private func retainWithoutClaim(
+        _ operationID: UUID,
+        reasons: [String]
+    ) async -> SmsProcessingOutcome {
+        do {
+            if let settled = try await store.settledOutcome(operationID: operationID) {
+                return settled
+            }
+        } catch {
+            // Best-effort lookup: continue to the durable review fallback below.
+        }
         if let reviewID = try? await store.retainUnownedForReview(
-            operationID: operationID, reasons: reasons
+            operationID: operationID,
+            reasons: reasons
         ) {
-            return .retainedForReview(operationID: operationID, reviewCaseID: reviewID, reasons: reasons)
+            return .retainedForReview(
+                operationID: operationID,
+                reviewCaseID: reviewID,
+                reasons: reasons
+            )
         }
         return .retryableFailure(
-            operationID: operationID, reviewCaseID: nil,
+            operationID: operationID,
+            reviewCaseID: nil,
             reason: reasons.first ?? "operation_interrupted"
         )
     }

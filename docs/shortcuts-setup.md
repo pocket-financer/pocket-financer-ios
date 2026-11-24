@@ -42,10 +42,7 @@ Verify that:
 1. Shortcuts reports an automatic run without asking for confirmation.
 2. Pocket Financer has exactly one inbox result.
 3. The automation reports that the alert was saved locally; it does not wait for the model.
-4. Open Pocket Financer. Under frozen v4, a grounded result appears in Review for
-   owner confirmation; failures remain in a privacy-safe retry/review state. The
-   planned successor route will allow a complete valid result to enter
-   Transactions directly.
+4. Open Pocket Financer. A valid transaction matching a confirmed local account saves automatically to Transactions (unless a matching transaction occurred within 5 minutes, which opens Review); unrecognized accounts or uncertain messages open Review, and OTP/non-transaction messages become body-free tombstones.
 
 ## Production-like sender-independent coverage
 

@@ -1,7 +1,15 @@
 import Foundation
 
-nonisolated enum SmsExtractorDecision: String, Codable, Sendable { case none, abstain, posted }
-nonisolated enum SmsExtractorDirection: String, Codable, Sendable { case debit, credit }
+nonisolated enum SmsExtractorDecision: String, Codable, Sendable {
+    case none
+    case abstain
+    case posted
+}
+
+nonisolated enum SmsExtractorDirection: String, Codable, Sendable {
+    case debit
+    case credit
+}
 
 nonisolated struct SmsExtractedTransaction: Codable, Equatable, Sendable {
     let minorUnits: Int64
@@ -20,11 +28,112 @@ nonisolated struct SmsExtractorResult: Codable, Equatable, Sendable {
     let transaction: SmsExtractedTransaction?
 }
 
+nonisolated struct DirectSelectorResponse: Equatable, Sendable {
+    let rawOutput: String
+    let runtimeProfileJSON: String
+    let requestJSON: String
+    let completion: String
+}
+
+nonisolated enum ModelUnavailabilityReason: String, Equatable, Sendable {
+    case deviceNotEligible
+    case appleIntelligenceNotEnabled
+    case modelNotReady
+    case unknown
+}
+
+nonisolated enum TransactionParserError: Error, Equatable, Sendable {
+    case modelUnavailable(ModelUnavailabilityReason)
+    case timedOut
+    case cancelled
+    case assetsUnavailable
+    case unsupportedLanguageOrLocale
+    case guardrailViolation
+    case unsupportedGuide
+    case decodingFailure
+    case rateLimited
+    case concurrentRequests
+    case modelRefused
+    case contextWindowExceeded
+    case generationFailed
+
+    var isRetryable: Bool {
+        switch self {
+        case .modelUnavailable(.appleIntelligenceNotEnabled),
+            .modelUnavailable(.modelNotReady),
+            .modelUnavailable(.unknown),
+            .timedOut,
+            .cancelled,
+            .assetsUnavailable,
+            .rateLimited,
+            .concurrentRequests:
+            true
+        case .modelUnavailable(.deviceNotEligible),
+            .unsupportedLanguageOrLocale,
+            .guardrailViolation,
+            .unsupportedGuide,
+            .decodingFailure,
+            .modelRefused,
+            .contextWindowExceeded,
+            .generationFailed:
+            false
+        }
+    }
+
+    var safeCode: String {
+        switch self {
+        case .modelUnavailable(let reason):
+            "model_\(reason.rawValue)"
+        case .timedOut:
+            "model_timed_out"
+        case .cancelled:
+            "model_cancelled"
+        case .assetsUnavailable:
+            "model_assets_unavailable"
+        case .unsupportedLanguageOrLocale:
+            "model_unsupported_language"
+        case .guardrailViolation:
+            "model_guardrail_violation"
+        case .unsupportedGuide:
+            "model_unsupported_guide"
+        case .decodingFailure:
+            "model_decoding_failed"
+        case .rateLimited:
+            "model_rate_limited"
+        case .concurrentRequests:
+            "model_concurrent_requests"
+        case .modelRefused:
+            "model_refused"
+        case .contextWindowExceeded:
+            "model_context_window_exceeded"
+        case .generationFailed:
+            "model_generation_failed"
+        }
+    }
+}
+
 nonisolated enum SmsExtractorValidationError: Error, Equatable, Sendable {
-    case malformedJSON, duplicateJSONKey, extraContent, outputNotObject, decisionTypeInvalid
-    case unknownDecision, nonPostedExtraFields, missingAmount, missingDirection, missingAccount
-    case postedFieldSetInvalid, amountInvalid, currencyInvalid, directionInvalid, accountInvalid, counterpartyInvalid
-    case evidenceInvalid, evidenceOutOfBounds, evidenceMismatch, amountValueDisagreement, outputTruncated
+    case malformedJSON
+    case duplicateJSONKey
+    case extraContent
+    case outputNotObject
+    case decisionTypeInvalid
+    case unknownDecision
+    case nonPostedExtraFields
+    case missingAmount
+    case missingDirection
+    case missingAccount
+    case postedFieldSetInvalid
+    case amountInvalid
+    case currencyInvalid
+    case directionInvalid
+    case accountInvalid
+    case counterpartyInvalid
+    case evidenceInvalid
+    case evidenceOutOfBounds
+    case evidenceMismatch
+    case amountValueDisagreement
+    case outputTruncated
 
     var reasonCode: String {
         switch self {
