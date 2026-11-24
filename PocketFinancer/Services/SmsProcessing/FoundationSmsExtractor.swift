@@ -1,6 +1,6 @@
 import Foundation
 #if canImport(FoundationModels)
-import FoundationModels
+    import FoundationModels
 #endif
 
 /// Guided flat extraction payload and deterministic canonical `sms-extractor/1` projection.
@@ -175,197 +175,197 @@ nonisolated enum SmsFlatExtractionProjector {
 }
 
 #if canImport(FoundationModels)
-@Generable(description: "Flat guided extraction matching apple-fm-flat.schema.json.")
-nonisolated struct GeneratedSmsExtraction {
-    @Guide(description: "none, abstain, or posted", .anyOf(["none", "abstain", "posted"]))
-    var decision: String
+    @Generable(description: "Flat guided extraction matching apple-fm-flat.schema.json.")
+    nonisolated struct GeneratedSmsExtraction {
+        @Guide(description: "none, abstain, or posted", .anyOf(["none", "abstain", "posted"]))
+        var decision: String
 
-    @Guide(description: "Unsigned plain decimal amount for posted, or empty string.")
-    var amountValue: String
+        @Guide(description: "Unsigned plain decimal amount for posted, or empty string.")
+        var amountValue: String
 
-    @Guide(description: "Three-letter ISO currency code for posted, or empty string.")
-    var amountCurrency: String
+        @Guide(description: "Three-letter ISO currency code for posted, or empty string.")
+        var amountCurrency: String
 
-    @Guide(description: "Zero-based Unicode scalar start of amount evidence, or 0.")
-    var amountStart: Int
+        @Guide(description: "Zero-based Unicode scalar start of amount evidence, or 0.")
+        var amountStart: Int
 
-    @Guide(description: "Exclusive Unicode scalar end of amount evidence, or 0.")
-    var amountEnd: Int
+        @Guide(description: "Exclusive Unicode scalar end of amount evidence, or 0.")
+        var amountEnd: Int
 
-    @Guide(description: "Exact verbatim amount evidence text, or empty string.")
-    var amountText: String
+        @Guide(description: "Exact verbatim amount evidence text, or empty string.")
+        var amountText: String
 
-    @Guide(
-        description: "debit or credit for posted, or empty string.",
-        .anyOf(["", "debit", "credit"])
-    )
-    var directionValue: String
-
-    @Guide(description: "Zero-based Unicode scalar start of direction evidence, or 0.")
-    var directionStart: Int
-
-    @Guide(description: "Exclusive Unicode scalar end of direction evidence, or 0.")
-    var directionEnd: Int
-
-    @Guide(description: "Exact verbatim direction evidence text, or empty string.")
-    var directionText: String
-
-    @Guide(description: "Account or VPA reference for posted, or empty string.")
-    var accountReference: String
-
-    @Guide(description: "Zero-based Unicode scalar start of account evidence, or 0.")
-    var accountStart: Int
-
-    @Guide(description: "Exclusive Unicode scalar end of account evidence, or 0.")
-    var accountEnd: Int
-
-    @Guide(description: "Exact verbatim account evidence text, or empty string.")
-    var accountText: String
-
-    @Guide(description: "Counterparty name if present, or empty string.")
-    var counterpartyValue: String
-
-    @Guide(description: "Zero-based Unicode scalar start of counterparty evidence, or 0.")
-    var counterpartyStart: Int
-
-    @Guide(description: "Exclusive Unicode scalar end of counterparty evidence, or 0.")
-    var counterpartyEnd: Int
-
-    @Guide(description: "Exact verbatim counterparty evidence text, or empty string.")
-    var counterpartyText: String
-
-    func toFlatExtraction() -> FlatSmsExtraction {
-        FlatSmsExtraction(
-            decision: decision,
-            amountValue: amountValue,
-            amountCurrency: amountCurrency,
-            amountStart: amountStart,
-            amountEnd: amountEnd,
-            amountText: amountText,
-            directionValue: directionValue,
-            directionStart: directionStart,
-            directionEnd: directionEnd,
-            directionText: directionText,
-            accountReference: accountReference,
-            accountStart: accountStart,
-            accountEnd: accountEnd,
-            accountText: accountText,
-            counterpartyValue: counterpartyValue,
-            counterpartyStart: counterpartyStart,
-            counterpartyEnd: counterpartyEnd,
-            counterpartyText: counterpartyText
+        @Guide(
+            description: "debit or credit for posted, or empty string.",
+            .anyOf(["", "debit", "credit"])
         )
-    }
-}
+        var directionValue: String
 
-/// Guided Apple Foundation Models extractor transport; host validates the projected output.
-nonisolated struct FoundationSmsExtractor: FoundationSmsExtracting {
-    static let runtimeProfileJSON = SmsFlatExtractionProjector.runtimeProfileJSON
+        @Guide(description: "Zero-based Unicode scalar start of direction evidence, or 0.")
+        var directionStart: Int
 
-    private let model: SystemLanguageModel
-    private let processingLocale: Locale
+        @Guide(description: "Exclusive Unicode scalar end of direction evidence, or 0.")
+        var directionEnd: Int
 
-    init(
-        model: SystemLanguageModel = .default,
-        processingLocale: Locale = ModelDiagnostics.modelProcessingLocale
-    ) {
-        self.model = model
-        self.processingLocale = processingLocale
-    }
+        @Guide(description: "Exact verbatim direction evidence text, or empty string.")
+        var directionText: String
 
-    static func projectFlatExtraction(_ flat: FlatSmsExtraction) throws -> String {
-        try SmsFlatExtractionProjector.projectFlatExtraction(flat)
-    }
+        @Guide(description: "Account or VPA reference for posted, or empty string.")
+        var accountReference: String
 
-    func extract(requestJSON: String) async throws -> DirectSelectorResponse {
-        switch model.availability {
-        case .available:
-            break
-        case .unavailable(let reason):
-            throw TransactionParserError.modelUnavailable(Self.map(reason))
+        @Guide(description: "Zero-based Unicode scalar start of account evidence, or 0.")
+        var accountStart: Int
+
+        @Guide(description: "Exclusive Unicode scalar end of account evidence, or 0.")
+        var accountEnd: Int
+
+        @Guide(description: "Exact verbatim account evidence text, or empty string.")
+        var accountText: String
+
+        @Guide(description: "Counterparty name if present, or empty string.")
+        var counterpartyValue: String
+
+        @Guide(description: "Zero-based Unicode scalar start of counterparty evidence, or 0.")
+        var counterpartyStart: Int
+
+        @Guide(description: "Exclusive Unicode scalar end of counterparty evidence, or 0.")
+        var counterpartyEnd: Int
+
+        @Guide(description: "Exact verbatim counterparty evidence text, or empty string.")
+        var counterpartyText: String
+
+        func toFlatExtraction() -> FlatSmsExtraction {
+            FlatSmsExtraction(
+                decision: decision,
+                amountValue: amountValue,
+                amountCurrency: amountCurrency,
+                amountStart: amountStart,
+                amountEnd: amountEnd,
+                amountText: amountText,
+                directionValue: directionValue,
+                directionStart: directionStart,
+                directionEnd: directionEnd,
+                directionText: directionText,
+                accountReference: accountReference,
+                accountStart: accountStart,
+                accountEnd: accountEnd,
+                accountText: accountText,
+                counterpartyValue: counterpartyValue,
+                counterpartyStart: counterpartyStart,
+                counterpartyEnd: counterpartyEnd,
+                counterpartyText: counterpartyText
+            )
         }
-        guard model.supportsLocale(processingLocale) else {
-            throw TransactionParserError.unsupportedLanguageOrLocale
+    }
+
+    /// Guided Apple Foundation Models extractor transport; host validates the projected output.
+    nonisolated struct FoundationSmsExtractor: FoundationSmsExtracting {
+        static let runtimeProfileJSON = SmsFlatExtractionProjector.runtimeProfileJSON
+
+        private let model: SystemLanguageModel
+        private let processingLocale: Locale
+
+        init(
+            model: SystemLanguageModel = .default,
+            processingLocale: Locale = ModelDiagnostics.modelProcessingLocale
+        ) {
+            self.model = model
+            self.processingLocale = processingLocale
         }
-        let instructions = try Self.instructions()
-        let session = LanguageModelSession(model: model) { instructions }
-        do {
-            return try await FoundationModelExecutionGate.shared.withPermit {
-                let response = try await session.respond(
-                    to: requestJSON,
-                    generating: GeneratedSmsExtraction.self,
-                    options: GenerationOptions(
-                        sampling: .greedy,
-                        maximumResponseTokens: 512
-                    )
-                )
-                let rawOutput = try Self.projectFlatExtraction(response.content.toFlatExtraction())
-                return DirectSelectorResponse(
-                    rawOutput: rawOutput,
-                    runtimeProfileJSON: Self.runtimeProfileJSON,
-                    requestJSON: requestJSON,
-                    completion: response.rawContent.isComplete ? "complete" : "incomplete"
-                )
+
+        static func projectFlatExtraction(_ flat: FlatSmsExtraction) throws -> String {
+            try SmsFlatExtractionProjector.projectFlatExtraction(flat)
+        }
+
+        func extract(requestJSON: String) async throws -> DirectSelectorResponse {
+            switch model.availability {
+            case .available:
+                break
+            case .unavailable(let reason):
+                throw TransactionParserError.modelUnavailable(Self.map(reason))
             }
-        } catch let error as TransactionParserError {
-            throw error
-        } catch let error as SmsExtractorValidationError {
-            throw error
-        } catch is CancellationError {
-            throw TransactionParserError.cancelled
-        } catch let error as LanguageModelSession.GenerationError {
-            throw Self.mapGenerationError(error)
-        } catch {
-            throw TransactionParserError.generationFailed
+            guard model.supportsLocale(processingLocale) else {
+                throw TransactionParserError.unsupportedLanguageOrLocale
+            }
+            let instructions = try Self.instructions()
+            let session = LanguageModelSession(model: model) { instructions }
+            do {
+                return try await FoundationModelExecutionGate.shared.withPermit {
+                    let response = try await session.respond(
+                        to: requestJSON,
+                        generating: GeneratedSmsExtraction.self,
+                        options: GenerationOptions(
+                            sampling: .greedy,
+                            maximumResponseTokens: 512
+                        )
+                    )
+                    let rawOutput = try Self.projectFlatExtraction(response.content.toFlatExtraction())
+                    return DirectSelectorResponse(
+                        rawOutput: rawOutput,
+                        runtimeProfileJSON: Self.runtimeProfileJSON,
+                        requestJSON: requestJSON,
+                        completion: response.rawContent.isComplete ? "complete" : "incomplete"
+                    )
+                }
+            } catch let error as TransactionParserError {
+                throw error
+            } catch let error as SmsExtractorValidationError {
+                throw error
+            } catch is CancellationError {
+                throw TransactionParserError.cancelled
+            } catch let error as LanguageModelSession.GenerationError {
+                throw Self.mapGenerationError(error)
+            } catch {
+                throw TransactionParserError.generationFailed
+            }
+        }
+
+        static func instructions() throws -> String {
+            try SmsContractAssets.extractorPrompt()
+        }
+
+        private static func map(
+            _ reason: SystemLanguageModel.Availability.UnavailableReason
+        ) -> ModelUnavailabilityReason {
+            switch reason {
+            case .deviceNotEligible: .deviceNotEligible
+            case .appleIntelligenceNotEnabled: .appleIntelligenceNotEnabled
+            case .modelNotReady: .modelNotReady
+            @unknown default: .unknown
+            }
+        }
+
+        private static func mapGenerationError(
+            _ error: LanguageModelSession.GenerationError
+        ) -> TransactionParserError {
+            switch error {
+            case .exceededContextWindowSize: .contextWindowExceeded
+            case .assetsUnavailable: .assetsUnavailable
+            case .guardrailViolation: .guardrailViolation
+            case .unsupportedGuide: .unsupportedGuide
+            case .unsupportedLanguageOrLocale: .unsupportedLanguageOrLocale
+            case .decodingFailure: .decodingFailure
+            case .rateLimited: .rateLimited
+            case .concurrentRequests: .concurrentRequests
+            case .refusal: .modelRefused
+            @unknown default: .generationFailed
+            }
         }
     }
-
-    static func instructions() throws -> String {
-        try SmsContractAssets.extractorPrompt()
-    }
-
-    private static func map(
-        _ reason: SystemLanguageModel.Availability.UnavailableReason
-    ) -> ModelUnavailabilityReason {
-        switch reason {
-        case .deviceNotEligible: .deviceNotEligible
-        case .appleIntelligenceNotEnabled: .appleIntelligenceNotEnabled
-        case .modelNotReady: .modelNotReady
-        @unknown default: .unknown
-        }
-    }
-
-    private static func mapGenerationError(
-        _ error: LanguageModelSession.GenerationError
-    ) -> TransactionParserError {
-        switch error {
-        case .exceededContextWindowSize: .contextWindowExceeded
-        case .assetsUnavailable: .assetsUnavailable
-        case .guardrailViolation: .guardrailViolation
-        case .unsupportedGuide: .unsupportedGuide
-        case .unsupportedLanguageOrLocale: .unsupportedLanguageOrLocale
-        case .decodingFailure: .decodingFailure
-        case .rateLimited: .rateLimited
-        case .concurrentRequests: .concurrentRequests
-        case .refusal: .modelRefused
-        @unknown default: .generationFailed
-        }
-    }
-}
 #else
-nonisolated struct FoundationSmsExtractor: FoundationSmsExtracting {
-    static let runtimeProfileJSON = SmsFlatExtractionProjector.runtimeProfileJSON
+    nonisolated struct FoundationSmsExtractor: FoundationSmsExtracting {
+        static let runtimeProfileJSON = SmsFlatExtractionProjector.runtimeProfileJSON
 
-    static func projectFlatExtraction(_ flat: FlatSmsExtraction) throws -> String {
-        try SmsFlatExtractionProjector.projectFlatExtraction(flat)
-    }
+        static func projectFlatExtraction(_ flat: FlatSmsExtraction) throws -> String {
+            try SmsFlatExtractionProjector.projectFlatExtraction(flat)
+        }
 
-    static func instructions() throws -> String {
-        try SmsContractAssets.extractorPrompt()
-    }
+        static func instructions() throws -> String {
+            try SmsContractAssets.extractorPrompt()
+        }
 
-    func extract(requestJSON _: String) async throws -> DirectSelectorResponse {
-        throw TransactionParserError.modelUnavailable(.deviceNotEligible)
+        func extract(requestJSON _: String) async throws -> DirectSelectorResponse {
+            throw TransactionParserError.modelUnavailable(.deviceNotEligible)
+        }
     }
-}
 #endif

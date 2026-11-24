@@ -10,10 +10,8 @@ struct AlertProcessingDetailView: View {
     @Query(sort: \Account.createdAt) private var accounts: [Account]
     @Query(sort: \SmsProcessingOperation.createdAt, order: .reverse) private var allSmsOperations:
         [SmsProcessingOperation]
-    @Query(sort: \SmsProcessingTraceEvent.sequence) private var allSmsTraceEvents:
-        [SmsProcessingTraceEvent]
-    @Query(sort: \SmsReviewCase.updatedAt, order: .reverse) private var allSmsReviewCases:
-        [SmsReviewCase]
+    @Query(sort: \SmsProcessingTraceEvent.sequence) private var allSmsTraceEvents: [SmsProcessingTraceEvent]
+    @Query(sort: \SmsReviewCase.updatedAt, order: .reverse) private var allSmsReviewCases: [SmsReviewCase]
     @Query(sort: \SmsSelectorAttempt.startedAt, order: .reverse) private var allSmsSelectorAttempts:
         [SmsSelectorAttempt]
     @Query(sort: \SmsPersistenceDecision.createdAt, order: .reverse) private var allPersistenceDecisions:
@@ -44,9 +42,7 @@ struct AlertProcessingDetailView: View {
 
     private var traceEvents: [SmsProcessingTraceEvent] {
         guard let operationID = operation?.id else { return [] }
-        return allSmsTraceEvents
-            .filter { $0.operationID == operationID }
-            .sorted { $0.sequence < $1.sequence }
+        return allSmsTraceEvents.filter { $0.operationID == operationID }.sorted { $0.sequence < $1.sequence }
     }
 
     private var reviewCase: SmsReviewCase? {

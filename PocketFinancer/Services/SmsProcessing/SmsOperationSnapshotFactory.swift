@@ -1,8 +1,8 @@
 import Foundation
-#if canImport(FoundationModels)
-import FoundationModels
-#endif
 import SwiftData
+#if canImport(FoundationModels)
+    import FoundationModels
+#endif
 
 nonisolated struct SmsOperationSnapshot: Sendable {
     let operationID: UUID
@@ -110,9 +110,9 @@ struct SmsOperationSnapshotFactory {
     private static func resolveEligibility(override: Bool?) -> Bool {
         if let override { return override }
         #if canImport(FoundationModels)
-        if case .available = SystemLanguageModel.default.availability {
-            return true
-        }
+            if case .available = SystemLanguageModel.default.availability {
+                return true
+            }
         #endif
         return false
     }
