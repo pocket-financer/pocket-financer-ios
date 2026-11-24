@@ -69,30 +69,41 @@ final class FoundationSmsExtractorTests: XCTestCase {
 
     func testPartialCounterpartyFailsValidatorAsCounterpartyInvalid() throws {
         let source = "INR 500.00 debited from XX0000."
-        let raw = try FoundationSmsExtractor.projectFlatExtraction(
-            FlatSmsExtraction(
-                decision: "posted",
-                amountValue: "500.00",
-                amountCurrency: "INR",
-                amountStart: 0,
-                amountEnd: 10,
-                amountText: "INR 500.00",
-                directionValue: "debit",
-                directionStart: 11,
-                directionEnd: 18,
-                directionText: "debited",
-                accountReference: "XX0000",
-                accountStart: 24,
-                accountEnd: 30,
-                accountText: "XX0000",
-                counterpartyValue: "",
-                counterpartyStart: 0,
-                counterpartyEnd: 0,
-                counterpartyText: "XX0000"
+        func projected(counterpartyStart: Int, counterpartyEnd: Int) throws -> String {
+            try FoundationSmsExtractor.projectFlatExtraction(
+                FlatSmsExtraction(
+                    decision: "posted",
+                    amountValue: "500.00",
+                    amountCurrency: "INR",
+                    amountStart: 0,
+                    amountEnd: 10,
+                    amountText: "INR 500.00",
+                    directionValue: "debit",
+                    directionStart: 11,
+                    directionEnd: 18,
+                    directionText: "debited",
+                    accountReference: "XX0000",
+                    accountStart: 24,
+                    accountEnd: 30,
+                    accountText: "XX0000",
+                    counterpartyValue: "",
+                    counterpartyStart: counterpartyStart,
+                    counterpartyEnd: counterpartyEnd,
+                    counterpartyText: "XX0000"
+                )
             )
-        )
+        }
+
+        let outOfBoundsRaw = try projected(counterpartyStart: 0, counterpartyEnd: 0)
         XCTAssertThrowsError(
-            try SmsExtractorValidator().validate(rawOutput: raw, source: source, primaryCurrency: "INR")
+            try SmsExtractorValidator().validate(rawOutput: outOfBoundsRaw, source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .evidenceOutOfBounds)
+        }
+
+        let invalidValueRaw = try projected(counterpartyStart: 24, counterpartyEnd: 30)
+        XCTAssertThrowsError(
+            try SmsExtractorValidator().validate(rawOutput: invalidValueRaw, source: source, primaryCurrency: "INR")
         ) { error in
             XCTAssertEqual(error as? SmsExtractorValidationError, .counterpartyInvalid)
         }

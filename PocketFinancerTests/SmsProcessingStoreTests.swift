@@ -295,16 +295,17 @@ final class SmsProcessingStoreTests: XCTestCase {
             source: rawBody,
             primaryCurrency: "INR"
         )
+        let extracted = try XCTUnwrap(extraction.transaction)
+        let fingerprint = CanonicalJSON.sha256(
+            "\(extracted.minorUnits)\0\(extracted.currency)\0"
+                + "\(extracted.direction.rawValue)\0\0\(snapshot.configuration.receivedTimestamp.epochMs)"
+        )
         let resultJSON = try SmsProcessingJSON.result(
             status: "review",
             extraction: extraction,
             operation: snapshot,
             account: SmsProcessingJSON.account(.unresolved, reference: "1234"),
-            duplicate: SmsProcessingJSON.duplicate(
-                status: "clear",
-                operation: snapshot,
-                fingerprint: CanonicalJSON.sha256("fp")
-            ),
+            duplicate: SmsProcessingJSON.duplicate(status: "clear", operation: snapshot, fingerprint: fingerprint),
             gate: SmsProcessingJSON.gate(
                 posted: true,
                 accountReason: "account_resolution_unresolved",
