@@ -1,0 +1,5 @@
+PocketFinancer/Resources/SmsProcessing/** text eol=lf
+PocketFinancerTests/Fixtures/** text eol=lf
+*.swift text eol=lf
+*.sh text eol=lf
+*.md text eol=lf

@@ -1,51 +1,26 @@
 # Pocket Financer iOS contributor guidance
 
-## Codex collaboration model profile
-
-This repository currently uses the following Codex collaboration profile
-(recorded 2026-08-31). It governs the coding agents working on this repository,
-not the models shipped in the Pocket Financer app.
-
-- The primary/root agent uses `gpt-5.6-sol` with `medium` reasoning. It owns
-  scope, integration, and final verification.
-- An `explorer` subagent uses `gpt-5.6-luna` with `medium` reasoning for
-  read-only repository discovery and behavior tracing.
-- A `worker` subagent uses `gpt-5.6-terra` with `medium` reasoning for bounded
-  implementation and verification tasks.
-- A `reviewer` subagent uses `gpt-5.6-terra` with `high` reasoning for read-only
-  correctness, security, regression, and test review.
-- A `default` subagent inherits the parent agent's model and reasoning effort
-  unless the spawning task explicitly overrides them.
-
-The active Codex runtime and task instructions are authoritative if this dated
-profile differs from the live configuration. A model or reasoning override does
-not change repository rules, task scope, permissions, or review requirements;
-record any deliberate override in the task handoff.
-
 ## Product invariants
 
 - Treat raw financial alerts as sensitive evidence. Persist an accepted alert before model work, keep processing local, and never log its body, sender, account label, or extracted transaction.
-- No CloudKit, telemetry, ads, remote inference, or network dependency without an explicit product decision and privacy review.
-- A model output is untrusted. Amount, date text, merchant, account label, and direction must be grounded in the raw alert before a transaction is saved.
-- Deterministically rejected OTP, verification, promotional, and collect-request bodies must be erased immediately. A model-only rejection is untrusted and must retain evidence for review.
-- Ingestion is idempotent and recovery-safe. A crash or unavailable model must leave a durable, retryable inbox record rather than lose evidence.
-- Keep platform implementations native. Share semantics and sanitized fixtures with Android, not UI or runtime code.
+- No cloud sync, telemetry, ads, remote inference, or network dependency without an explicit product decision and privacy review.
+- `SmsPrefilter` (`sms-prefilter/1`) runs before model invocation using only the immutable SMS body and settles unambiguous non-financial alerts into body-free `tombstoned_excluded` records (`rawBody = ""`).
+- Apple Foundation Models (`FoundationSmsExtractor` using the 18-field guided flat schema `apple-fm-flat.schema.json` and `prompts/apple-fm-sms-extractor.txt`) is the central classifier and extractor. Its output is untrusted: `SmsExtractorValidator` enforces one JSON object, Unicode-scalar spans, ISO-4217 currency markers, expanded direction cues, and normalized account/counterparty derivation.
+- Receipt time is host-owned (`platform_received`) and never supplied or edited by the model or Review.
+- Complete, strictly valid `posted` extractions that resolve to a unique confirmed `SmsAccountAlias` and clear the 5-minute (`300` seconds) duplicate window automatically save to `Transaction` and settle the `SmsProcessingOperation` as `.persisted`.
+- Unresolved, ambiguous, abstained, invalid, failed, or 5-minute duplicate alerts retain source evidence and open a durable `SmsReviewCase`. Confirming or correcting in Review atomically saves the transaction and creates/links the confirmed `Account` and `SmsAccountAlias`.
+- Valid `none` extractions erase sensitive evidence into body-free `tombstoned_none` tombstones (`rawBody = ""`).
+- Ingestion is idempotent and recovery-safe. A crash or unavailable model preserves a durable retryable inbox record or review case rather than losing evidence.
+- Keep platform implementations native. Share canonical contracts, assets (`sync_native_assets.py --target ios`), and sanitized fixtures with the sibling `pocket-financer-intelligence` and `pocket-financer-android` repositories without sharing UI or runtime code.
 
 ## Development
 
-- Minimum iOS version is 26. Use stable iOS 26 APIs for production behavior; isolate any iOS 27 experiment behind availability checks and never make prerelease APIs a shipping dependency.
-- Use Swift 6 strict concurrency and Apple frameworks first. Avoid third-party dependencies unless the benefit is documented.
-- Prefer standard SwiftUI containers and controls so the interface inherits current Liquid Glass behavior. Use explicit glass effects sparingly and only for interactive hierarchy.
-- Keep the app usable when Foundation Models is unavailable: preserve eligible alerts as pending and support manual review/retry.
-- Add or update unit tests for filtering, evidence validation, deduplication, persistence recovery, destructive erasure, and parser availability.
-- Do not put real SMS messages, phone numbers, account identifiers, signing credentials, or model transcripts in source, fixtures, logs, screenshots, or CI artifacts.
+- Minimum iOS version is 26.0 with Swift 6 strict concurrency (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`) and zero third-party packages.
+- Read `.swift-format` before editing Swift files (`scripts/format.sh --lint` runs with `--strict`). Keep lines at or under 120 characters, keep imports lexicographically sorted, put one enum case per line, group numeric literals with five or more digits (`300_000`), and keep getters single-line where appropriate.
+- Preserve existing `@Model` classes (`ExtractionRun`, `StructuredGenerationSnapshot`, `DeterministicFilterRun`, `InboxAlert`, `Transaction`, `Account`, and `SmsProcessingModels`) so consecutive `PocketFinancerSchemaV1..V7` migrations continue to pass.
+- Do not commit real SMS messages, phone numbers, account identifiers, signing credentials, or model transcripts in source, fixtures, logs, screenshots, or CI artifacts.
 
 ## Git and releases
 
 - Use Conventional Commit subjects (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, `chore:`).
-- All implementation work uses a short-lived `codex/<type>-<description>` branch and a pull request targeting `main`. Do not push feature, fix, refactor, documentation, dependency, or CI work directly to `main`.
-- Codex should create the branch, commit, push, and open the pull request when repository credentials permit. Never bypass required checks or branch protection.
-- Pull requests should remain focused and pass formatting, Release build, unit, and UI smoke checks. Pull-request titles use Conventional Commit form because the squash title becomes the commit on `main`.
-- Release Please prepares releases; publishing remains an explicit maintainer action.
-- Release Please owns `version.txt`, `CHANGELOG.md`, release tags, and stable GitHub Releases during normal operation. Do not merge its release pull request unless the user explicitly asks to publish.
-- Never commit `xcuserdata`, signing material, local `.xcconfig` overrides, DerivedData, or `.xcresult` bundles.
+- Work on short-lived `codex/<type>-<description>` branches targeting `main`. Never push directly to `main`, and never commit `xcuserdata`, signing material, local `.xcconfig` overrides, `DerivedData`, or `.xcresult` bundles.

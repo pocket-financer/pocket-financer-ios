@@ -30,7 +30,7 @@ struct IngestionReceipt: Equatable, Sendable {
         case .rejected:
             "Alert checked locally. No transaction was added."
         case .duplicate:
-            "Alert already received. No duplicate transaction was added."
+            "A similar alert was saved for duplicate review. Its original evidence was preserved."
         }
     }
 }
@@ -51,13 +51,9 @@ final class AlertIngestionService {
     static let maximumSourceApplicationBytes = 256
 
     private let context: ModelContext
-    private var cachedParser: (any TransactionParsing)?
-    private var parserLoadTask: Task<any TransactionParsing, Never>?
-    private let parserFactory: @Sendable () async -> any TransactionParsing
-    private let filter: AlertFilter
-    private let validator: EvidenceValidator
-    private let parserTimeout: Duration
     private let contextSaver: @MainActor (ModelContext) throws -> Void
+    private let smsExtractor: any FoundationSmsExtracting
+    private let extractorEligibilityOverride: Bool?
 
     /// Main-actor reentrancy permits another service instance to enter while a parser
     /// request is suspended. A process-wide token prevents a second attempt for the same
@@ -76,27 +72,24 @@ final class AlertIngestionService {
         let transactionWasEdited: Bool?
     }
 
+    private enum PreparedProcessing {
+        case receipt(IngestionReceipt)
+        case current(SmsOperationSnapshot, SmsOperationClaim)
+    }
+
     private static var processingClaims: [UUID: ProcessingClaim] = [:]
     private static var processingEpoch: UInt64 = 0
 
     init(
         context: ModelContext,
-        parser: (any TransactionParsing)? = nil,
-        parserFactory: @escaping @Sendable () async -> any TransactionParsing = {
-            await FoundationModelTransactionParser.loadDefault()
-        },
-        filter: AlertFilter = AlertFilter(),
-        validator: EvidenceValidator = EvidenceValidator(),
-        parserTimeout: Duration = FoundationModelExtractionContract.timeout,
-        contextSaver: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() }
+        contextSaver: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
+        smsExtractor: any FoundationSmsExtracting = FoundationSmsExtractor(),
+        extractorEligibilityOverride: Bool? = nil
     ) {
         self.context = context
-        cachedParser = parser
-        self.parserFactory = parserFactory
-        self.filter = filter
-        self.validator = validator
-        self.parserTimeout = parserTimeout
         self.contextSaver = contextSaver
+        self.smsExtractor = smsExtractor
+        self.extractorEligibilityOverride = extractorEligibilityOverride
     }
 
     static func enqueueLive(
@@ -191,11 +184,23 @@ final class AlertIngestionService {
             receivedAt: resolvedDate
         )
         context.insert(alert)
+        let metadataPayload =
+            #"{"sender_supplied":\#(sender != nil),"timestamp_supplied":\#(receivedAt != nil),"source_application_supplied":\#(sourceApplication != nil)}"#
+        context.insert(
+            SmsSourceMetadataEvent(
+                sourceAlertID: alert.id,
+                sequence: 0,
+                kind: "admission_optional_field_presence",
+                payloadJSON: metadataPayload,
+                occurredAt: alert.createdAt
+            ))
 
         if let duplicate {
-            alert.status = .duplicate
+            // Equal content within a short time window is only a heuristic.
+            // Preserve both admissions and require an explicit user decision.
+            alert.status = .needsReview
             alert.duplicateOfAlertID = duplicate.id
-            alert.eraseSensitiveEvidence()
+            alert.lastErrorCode = "possible_duplicate_heuristic_match"
             try save()
             return IngestionReceipt(alertID: alert.id, disposition: .duplicate)
         }
@@ -234,13 +239,26 @@ final class AlertIngestionService {
         }
     }
 
-    func retry(alertID: UUID) async throws -> IngestionReceipt {
+    func retry(
+        alertID: UUID,
+        parentOperationID: UUID? = nil,
+        configurationMode: String = "current"
+    ) async throws -> IngestionReceipt {
+        guard ["original", "current"].contains(configurationMode) else {
+            throw AlertIngestionError.persistenceFailed
+        }
         guard let alert = try findAlert(id: alertID) else { throw AlertIngestionError.alertNotFound }
         guard !alert.rawBody.isEmpty else {
             return IngestionReceipt(alertID: alert.id, disposition: .rejected)
         }
         do {
-            return try await classifyAndProcessIfClaimed(alert, allowBeyondAutomaticAttemptLimit: true)
+            return try await classifyAndProcessIfClaimed(
+                alert,
+                allowBeyondAutomaticAttemptLimit: true,
+                retryParentOperationID: parentOperationID,
+                retryConfigurationMode: configurationMode,
+                isOwnerRetry: true
+            )
                 ?? IngestionReceipt(alertID: alert.id, disposition: .alreadyProcessing)
         } catch {
             return IngestionReceipt(alertID: alert.id, disposition: .processingIncomplete)
@@ -284,11 +302,13 @@ final class AlertIngestionService {
             guard !Task.isCancelled, Self.processingEpoch == batchEpoch else { break }
             guard let alert = try? findAlert(id: alertID) else { continue }
             do {
-                if try await classifyAndProcessIfClaimed(
+                if let receipt = try await classifyAndProcessIfClaimed(
                     alert,
                     allowBeyondAutomaticAttemptLimit: includeNeedsReview,
                     expectedProcessingEpoch: batchEpoch
-                ) != nil {
+                ), receipt.disposition != .alreadyProcessing,
+                    receipt.disposition != .processingIncomplete
+                {
                     completed += 1
                 }
             } catch {
@@ -308,7 +328,10 @@ final class AlertIngestionService {
     private func classifyAndProcessIfClaimed(
         _ alert: InboxAlert,
         allowBeyondAutomaticAttemptLimit: Bool,
-        expectedProcessingEpoch: UInt64? = nil
+        expectedProcessingEpoch: UInt64? = nil,
+        retryParentOperationID: UUID? = nil,
+        retryConfigurationMode: String = "current",
+        isOwnerRetry: Bool = false
     ) async throws -> IngestionReceipt? {
         let alertID = alert.id
         guard
@@ -320,22 +343,6 @@ final class AlertIngestionService {
             )
         else { return nil }
         let ownerStateAtEntry = try ownerState(for: preflightAlert)
-
-        var preparedParser: (any TransactionParsing)?
-        let isWithinAttemptLimit =
-            allowBeyondAutomaticAttemptLimit
-            || preflightAlert.attemptCount < Self.automaticAttemptLimit
-        if isWithinAttemptLimit,
-            filter.trace(sender: preflightAlert.sender, body: preflightAlert.rawBody).result.isEligible
-        {
-            // Parser discovery can be slow on a physical device. Do it before acquiring
-            // the per-alert claim so a cancelled scene task cannot block the replacement
-            // active-scene drain from retrying this durable alert.
-            preparedParser = await resolveParser()
-            guard !Task.isCancelled else {
-                return IngestionReceipt(alertID: alertID, disposition: .queued)
-            }
-        }
 
         guard
             let currentAlert = try findAlert(id: alertID),
@@ -361,381 +368,301 @@ final class AlertIngestionService {
         else { return nil }
         defer { Self.releaseClaim(for: alertID, claim: claim) }
 
-        if !allowBeyondAutomaticAttemptLimit,
-            currentAlert.attemptCount >= Self.automaticAttemptLimit
-        {
-            currentAlert.status = .needsReview
-            currentAlert.lastErrorCode = "automatic_retry_limit_reached"
-            currentAlert.updatedAt = .now
-            try save()
-            return IngestionReceipt(alertID: currentAlert.id, disposition: .needsReview)
-        }
-
-        let filterTrace = filter.trace(sender: currentAlert.sender, body: currentAlert.rawBody)
-        let filterResult = filterTrace.result
-        switch filterResult.decision {
-        case .eligible:
-            guard let preparedParser else {
-                return IngestionReceipt(alertID: currentAlert.id, disposition: .queued)
-            }
-            let filterRun = try makeFilterRun(trace: filterTrace, alertID: currentAlert.id)
-            context.insert(filterRun)
-            // Commit the exact deterministic decision before model work starts.
-            try save()
-            return try await process(
-                currentAlert,
-                parser: preparedParser,
-                claim: claim,
-                filterRun: filterRun
-            )
-        case .rejectAndErase:
-            let filterRun = try makeFilterRun(trace: filterTrace, alertID: currentAlert.id)
-            context.insert(filterRun)
-            reject(
-                currentAlert,
-                code: filterResult.rejectionCode?.rawValue ?? AlertRejectionCode.emptyBody.rawValue
-            )
-            try save()
-            return IngestionReceipt(alertID: currentAlert.id, disposition: .rejected)
-        case .needsReview:
-            let filterRun = try makeFilterRun(trace: filterTrace, alertID: currentAlert.id)
-            context.insert(filterRun)
-            currentAlert.status = .needsReview
-            currentAlert.rejectionCode = nil
-            currentAlert.lastErrorCode =
-                filterResult.rejectionCode?.rawValue ?? AlertRejectionCode.missingTransactionVerb.rawValue
-            currentAlert.updatedAt = .now
-            try save()
-            return IngestionReceipt(alertID: currentAlert.id, disposition: .needsReview)
-        }
-    }
-
-    private func process(
-        _ alert: InboxAlert,
-        parser: any TransactionParsing,
-        claim: ProcessingClaim,
-        filterRun: DeterministicFilterRun
-    ) async throws -> IngestionReceipt {
-        let alertID = alert.id
-        let transactionAtStart = try findTransaction(for: alert)
-        if let transactionAtStart, transactionAtStart.isEdited {
-            alert.status = .imported
-            alert.lastErrorCode = nil
-            alert.updatedAt = .now
-            try save()
-            return IngestionReceipt(alertID: alert.id, disposition: .imported)
-        }
-
-        let transactionIDAtStart = transactionAtStart?.id
-        let transactionUpdatedAtAtStart = transactionAtStart?.updatedAt
-
-        let startedAt = Date.now
-        alert.status = .processing
-        alert.attemptCount += 1
-        alert.lastAttemptAt = startedAt
-        alert.updatedAt = startedAt
-        alert.lastErrorCode = nil
-        alert.parserName = parser.parserName
-        let requestMetadata = parser.requestMetadata
-        let extractionRun = ExtractionRun(
-            alertID: alert.id,
-            attemptIndex: alert.attemptCount,
-            startedAt: startedAt,
-            parserName: parser.parserName,
-            contractVersion: FoundationModelExtractionContract.contractVersion,
-            profileVersion: FoundationModelExtractionContract.extractionProfileVersion,
-            localeIdentifier: requestMetadata.localeIdentifier,
-            localeWasSupported: requestMetadata.localeWasSupported,
-            supportedLanguageIdentifiers: requestMetadata.supportedLanguageIdentifiers,
-            exactInstructions: FoundationModelExtractionContract.instructions,
-            exactRequest: FoundationModelExtractionContract.requestPrompt(
-                body: alert.rawBody,
-                receivedAt: alert.receivedAt
-            )
-        )
-        filterRun.extractionRunID = extractionRun.id
-        context.insert(extractionRun)
-        try save()
-
-        let draft: ParsedAlertDraft
+        let prepared: PreparedProcessing
         do {
-            draft = try await parseWithDeadline(
-                parser: parser,
-                body: alert.rawBody,
-                sender: alert.sender,
-                receivedAt: alert.receivedAt,
-                extractionRunID: extractionRun.id,
-                alertID: alertID,
-                claim: claim
-            )
-            if Task.isCancelled {
-                throw TransactionParserError.cancelled
+            prepared = try SmsProcessingStore.withAdmissionLock(container: context.container) {
+                admissionContext in
+                try prepareProcessing(
+                    currentAlert,
+                    admissionContext: admissionContext,
+                    allowBeyondAutomaticAttemptLimit: allowBeyondAutomaticAttemptLimit,
+                    retryParentOperationID: retryParentOperationID,
+                    retryConfigurationMode: retryConfigurationMode,
+                    isOwnerRetry: isOwnerRetry
+                )
             }
-        } catch let error as TransactionParserError {
-            guard Self.ownsClaim(for: alertID, claim: claim) else {
-                return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
-            }
-            if let preserved = try preserveOwnerChangeIfNeeded(
-                alert: alert,
-                transactionIDAtStart: transactionIDAtStart,
-                transactionUpdatedAtAtStart: transactionUpdatedAtAtStart,
-                extractionRun: extractionRun
-            ) {
-                return preserved
-            }
-            let completedAt = Date.now
-            alert.status = error.isRetryable ? .pending : .needsReview
-            alert.lastErrorCode = error.safeCode
-            alert.updatedAt = completedAt
-            extractionRun.recordValidationNotPerformed()
-            extractionRun.complete(
-                safeResultCode: error.safeCode,
-                disposition: error.isRetryable ? .queued : .needsReview,
-                at: completedAt
-            )
-            try save()
-            return IngestionReceipt(
-                alertID: alert.id,
-                disposition: error.isRetryable ? .queued : .needsReview
-            )
-        } catch let error as AlertIngestionError {
-            guard Self.ownsClaim(for: alertID, claim: claim) else {
-                return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
-            }
-            if let preserved = try preserveOwnerChangeIfNeeded(
-                alert: alert,
-                transactionIDAtStart: transactionIDAtStart,
-                transactionUpdatedAtAtStart: transactionUpdatedAtAtStart,
-                extractionRun: extractionRun
-            ) {
-                return preserved
-            }
-            // The attempt and source evidence were committed before generation. If an
-            // observable model snapshot cannot be committed, stop before validation or
-            // ledger mutation and leave the durable processing record recoverable.
-            throw error
-        } catch {
-            guard Self.ownsClaim(for: alertID, claim: claim) else {
-                return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
-            }
-            if let preserved = try preserveOwnerChangeIfNeeded(
-                alert: alert,
-                transactionIDAtStart: transactionIDAtStart,
-                transactionUpdatedAtAtStart: transactionUpdatedAtAtStart,
-                extractionRun: extractionRun
-            ) {
-                return preserved
-            }
-            let completedAt = Date.now
-            let safeCode =
-                Task.isCancelled
-                ? TransactionParserError.cancelled.safeCode
-                : "parser_failed"
-            alert.status = .pending
-            alert.lastErrorCode = safeCode
-            alert.updatedAt = completedAt
-            extractionRun.recordValidationNotPerformed()
-            extractionRun.complete(
-                safeResultCode: safeCode,
-                disposition: .queued,
-                at: completedAt
-            )
-            try save()
-            return IngestionReceipt(alertID: alert.id, disposition: .queued)
+        } catch SmsProcessingStoreError.admissionBusy {
+            return IngestionReceipt(alertID: alertID, disposition: .alreadyProcessing)
+        } catch SmsProcessingStoreError.sourceConflict {
+            return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
         }
+        if case .receipt(let receipt) = prepared { return receipt }
 
-        // Only the process-wide claim owner may apply a response after this suspension.
+        let processingStore = SmsProcessingStore(modelContainer: context.container)
+        let sourceReference = AdmittedMessageRef(
+            sourceID: currentAlert.id,
+            admissionReceiptID: currentAlert.id,
+            sourceDigest: CanonicalJSON.sha256(currentAlert.rawBody)
+        )
+        let outcome: SmsProcessingOutcome
+        switch prepared {
+        case .receipt(let receipt):
+            return receipt
+        case .current(let snapshot, let initialClaim):
+            let coordinator = SmsProcessingCoordinator(
+                store: processingStore,
+                extractor: smsExtractor,
+                accountResolver: { evidence in
+                    try GroundedAccountResolver(context: self.context).resolve(evidence)
+                }
+            )
+            outcome = await coordinator.process(
+                source: sourceReference,
+                operation: snapshot,
+                observer: NoOpSmsProcessingObserver(),
+                initialClaim: initialClaim
+            )
+        }
         guard Self.ownsClaim(for: alertID, claim: claim) else {
             return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
         }
-
-        extractionRun.recordParserDraft(draft, receivedAt: .now)
-        // Persist the parser response before evidence validation or ledger mutation.
-        try save()
-
-        let validationReport = validator.report(
-            draft,
-            body: alert.rawBody,
-            receivedAt: alert.receivedAt
-        )
-        extractionRun.recordValidation(validationReport)
-        // Persist every validation stage before mutating the accepted ledger state.
-        try save()
-
-        if let preserved = try preserveOwnerChangeIfNeeded(
-            alert: alert,
-            transactionIDAtStart: transactionIDAtStart,
-            transactionUpdatedAtAtStart: transactionUpdatedAtAtStart,
-            extractionRun: extractionRun
-        ) {
-            return preserved
-        }
-
-        switch validationReport.result {
-        case .failure(let issue):
-            let completedAt = Date.now
-            alert.status = .needsReview
-            alert.lastErrorCode = issue.rawValue
-            alert.updatedAt = completedAt
-            extractionRun.complete(
-                safeResultCode: issue.rawValue,
-                disposition: .needsReview,
-                at: completedAt
-            )
+        switch outcome {
+        case .terminallyDiscarded(_, let reason):
+            // The coordinator uses an independent model context. Mirror the erasure in
+            // this context before saving the foreground status so stale source fields
+            // can never be written back over the durable discard.
+            currentAlert.eraseSensitiveEvidence()
+            currentAlert.status = .rejected
+            currentAlert.rejectionCode =
+                reason == "extractor_none" ? "tombstoned_none" : "tombstoned_excluded"
+            currentAlert.lastErrorCode = reason
+            currentAlert.updatedAt = .now
             try save()
-            return IngestionReceipt(alertID: alert.id, disposition: .needsReview)
-
-        case .success(let validated):
-            let account = try resolveAccount(
-                label: validated.accountLabel,
-                sender: alert.sender,
-                body: alert.rawBody
-            )
-            let transaction: Transaction
-            if let existing = try findTransaction(for: alert) {
-                existing.amountMinorUnits = validated.amountMinorUnits
-                existing.currencyCode = validated.currencyCode
-                existing.merchant = validated.merchant
-                existing.occurredAt = validated.occurredAt
-                existing.direction = validated.direction
-                existing.accountID = account.id
-                existing.accountLabel = account.name
-                existing.parserName = parser.parserName
-                existing.reviewState = validated.reviewState
-                existing.amountEvidenceText = validated.amountEvidenceText
-                existing.dateEvidenceText = validated.dateEvidenceText
-                existing.updatedAt = .now
-                transaction = existing
-            } else {
-                transaction = Transaction(
-                    amountMinorUnits: validated.amountMinorUnits,
-                    currencyCode: validated.currencyCode,
-                    merchant: validated.merchant,
-                    occurredAt: validated.occurredAt,
-                    direction: validated.direction,
-                    accountID: account.id,
-                    accountLabel: account.name,
-                    parserName: parser.parserName,
-                    reviewState: validated.reviewState,
-                    sourceAlertID: alert.id,
-                    amountEvidenceText: validated.amountEvidenceText,
-                    dateEvidenceText: validated.dateEvidenceText
-                )
-                context.insert(transaction)
-            }
-            alert.transactionID = transaction.id
-            alert.status = validated.reviewState == .confirmed ? .imported : .needsReview
-            alert.lastErrorCode = nil
-            let completedAt = Date.now
-            alert.updatedAt = completedAt
-            extractionRun.recordAcceptedTransaction(transaction)
-            extractionRun.complete(
-                safeResultCode: "validation_passed",
-                disposition: validated.reviewState == .confirmed ? .imported : .needsReview,
-                at: completedAt
-            )
+            return IngestionReceipt(alertID: alertID, disposition: .rejected)
+        case .retainedForReview(_, _, let reasons):
+            currentAlert.status = .needsReview
+            currentAlert.lastErrorCode = reasons.first
+            currentAlert.updatedAt = .now
             try save()
-            return IngestionReceipt(
-                alertID: alert.id,
-                disposition: validated.reviewState == .confirmed ? .imported : .needsReview
+            return IngestionReceipt(alertID: alertID, disposition: .needsReview)
+        case .persisted(_, let transactionIDs, _):
+            currentAlert.status = .imported
+            currentAlert.transactionID = transactionIDs.first ?? currentAlert.transactionID
+            currentAlert.lastErrorCode = nil
+            currentAlert.rejectionCode = nil
+            currentAlert.parserName = SmsContractAssets.releaseID
+            currentAlert.updatedAt = .now
+            try save()
+            return IngestionReceipt(alertID: alertID, disposition: .imported)
+        case .retryableFailure(_, _, let reason), .stopped(_, _, let reason):
+            currentAlert.status = .needsReview
+            currentAlert.lastErrorCode = reason
+            currentAlert.updatedAt = .now
+            try save()
+            return IngestionReceipt(alertID: alertID, disposition: .needsReview)
+        }
+    }
+
+    /// Ordinary queue recovery is not an extraction retry. Selection happens before
+    /// reading current settings, and the initial durable lease is reserved before
+    /// releasing the admission lock. No source identity is inferred from content.
+    private func prepareProcessing(
+        _ alert: InboxAlert,
+        admissionContext: ModelContext,
+        allowBeyondAutomaticAttemptLimit: Bool,
+        retryParentOperationID: UUID?,
+        retryConfigurationMode: String,
+        isOwnerRetry: Bool
+    ) throws -> PreparedProcessing {
+        let sourceID = alert.id
+        guard
+            let durableAlert = try admissionContext.fetch(
+                FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == sourceID })
+            ).first
+        else { throw SmsProcessingStoreError.sourceNotFound }
+        // A stale context must not process or write back evidence replaced elsewhere.
+        guard
+            durableAlert.rawBody.utf8.elementsEqual(alert.rawBody.utf8),
+            durableAlert.sender.utf8.elementsEqual(alert.sender.utf8),
+            durableAlert.receivedAt == alert.receivedAt,
+            durableAlert.sourceIdentity == alert.sourceIdentity,
+            durableAlert.sourceApplication == alert.sourceApplication
+        else { throw SmsProcessingStoreError.sourceConflict }
+        if [.imported, .rejected, .duplicate].contains(durableAlert.status) {
+            return .receipt(
+                IngestionReceipt(
+                    alertID: sourceID, disposition: Self.currentDisposition(for: durableAlert)
+                ))
+        }
+
+        let operations = try admissionContext.fetch(
+            FetchDescriptor<SmsProcessingOperation>(
+                predicate: #Predicate { $0.sourceAlertID == sourceID },
+                sortBy: [SortDescriptor(\SmsProcessingOperation.createdAt, order: .reverse)]
             )
+        ).sorted {
+            if $0.createdAt == $1.createdAt { return $0.id.uuidString > $1.id.uuidString }
+            return $0.createdAt > $1.createdAt
         }
-    }
-
-    private func resolveParser() async -> any TransactionParsing {
-        if let cachedParser {
-            return cachedParser
-        }
-
-        let loadTask: Task<any TransactionParsing, Never>
-        if let parserLoadTask {
-            loadTask = parserLoadTask
-        } else {
-            let parserFactory = self.parserFactory
-            let newLoadTask = Task { await parserFactory() }
-            parserLoadTask = newLoadTask
-            loadTask = newLoadTask
-        }
-
-        let parser = await loadTask.value
-        cachedParser = parser
-        parserLoadTask = nil
-        return parser
-    }
-
-    private func parseWithDeadline(
-        parser: any TransactionParsing,
-        body: String,
-        sender: String,
-        receivedAt: Date,
-        extractionRunID: UUID,
-        alertID: UUID,
-        claim: ProcessingClaim
-    ) async throws -> ParsedAlertDraft {
-        try await withThrowingTaskGroup(of: ParsedAlertDraft.self) { group in
-            group.addTask { [self] in
-                try await parser.parse(
-                    body: body,
-                    sender: sender,
-                    receivedAt: receivedAt
-                ) { progress in
-                    try await self.persist(
-                        parserProgress: progress,
-                        extractionRunID: extractionRunID,
-                        alertID: alertID,
-                        claim: claim
-                    )
-                }
-            }
-            group.addTask { [self] in
-                try await Task.sleep(for: self.parserTimeout)
-                throw TransactionParserError.timedOut
-            }
-
-            guard let first = try await group.next() else {
-                throw TransactionParserError.generationFailed
-            }
-            group.cancelAll()
-            return first
-        }
-    }
-
-    private func persist(
-        parserProgress: TransactionParserProgress,
-        extractionRunID: UUID,
-        alertID: UUID,
-        claim: ProcessingClaim
-    ) throws {
-        guard !Task.isCancelled else { throw TransactionParserError.cancelled }
-        guard Self.ownsClaim(for: alertID, claim: claim) else { return }
-        guard case .generationSnapshot(let snapshot) = parserProgress else { return }
-
-        let descriptor = FetchDescriptor<StructuredGenerationSnapshot>()
-        if let existing = try context.fetch(descriptor).first(where: {
-            $0.extractionRunID == extractionRunID
-                && $0.sequenceIndex == snapshot.sequenceIndex
+        let now = Date.now
+        if operations.contains(where: {
+            $0.settledAt == nil && $0.ownerToken != nil
+                && $0.claimExpiresAt.map { $0 > now } == true
         }) {
-            guard
-                existing.rawContentJSON == snapshot.rawContentJSON,
-                existing.isComplete == snapshot.isComplete,
-                existing.formatIdentifier == snapshot.formatIdentifier
-            else {
-                throw AlertIngestionError.persistenceFailed
-            }
-            return
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .alreadyProcessing))
         }
+        let latest = operations.first
+        if let latest, !isOwnerRetry {
+            switch latest.state {
+            case .retainedReview:
+                alert.status = .needsReview
+                let operationID = latest.id
+                let review = try admissionContext.fetch(
+                    FetchDescriptor<SmsReviewCase>(
+                        predicate: #Predicate { $0.currentOperationID == operationID }
+                    )
+                ).first
+                alert.lastErrorCode = review?.reasonCodesRawValue
+                    .split(separator: "\n").first.map(String.init)
+                alert.updatedAt = now
+                try save()
+                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+            case .persisted:
+                alert.status = .imported
+                alert.lastErrorCode = nil
+                alert.updatedAt = now
+                try save()
+                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .imported))
+            case .discarded:
+                alert.eraseSensitiveEvidence()
+                alert.status = .rejected
+                alert.rejectionCode = latest.retentionState
+                alert.lastErrorCode = latest.tombstoneReason
+                try save()
+                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .rejected))
+            default:
+                // Frozen decoding/executable-adapter restoration is not yet supported.
+                // Keep the original operation intact and make the owner retry explicit.
+                return try requireOperationRecovery(alert, now: now)
+            }
+        }
+        if isOwnerRetry, let latest {
+            if let retryParentOperationID, retryParentOperationID != latest.id {
+                throw SmsProcessingStoreError.stateConflict
+            }
+            // Expired/malformed leases must pass through the existing recovery fence;
+            // a retry cannot make still-unsettled model work its own parent implicitly.
+            if latest.settledAt == nil {
+                guard latest.ownerToken == nil,
+                    [.ready, .interrupted, .retryWait].contains(latest.state)
+                else { return try requireOperationRecovery(alert, now: now) }
+            }
+        } else if retryParentOperationID != nil {
+            throw SmsProcessingStoreError.operationNotFound
+        }
+        let parentID = isOwnerRetry ? latest?.id : nil
 
-        context.insert(
-            StructuredGenerationSnapshot(
-                extractionRunID: extractionRunID,
-                sequenceIndex: snapshot.sequenceIndex,
-                capturedAt: snapshot.capturedAt,
-                rawContentJSON: snapshot.rawContentJSON,
-                isComplete: snapshot.isComplete,
-                formatIdentifier: snapshot.formatIdentifier
-            )
+        if !allowBeyondAutomaticAttemptLimit,
+            durableAlert.attemptCount >= Self.automaticAttemptLimit
+        {
+            alert.status = .needsReview
+            alert.lastErrorCode = "automatic_retry_limit_reached"
+            alert.updatedAt = now
+            try save()
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+        }
+        guard let currency = PrimaryCurrencySettings.confirmedCode else {
+            alert.status = .pending
+            alert.lastErrorCode = "configuration_primary_currency_required"
+            alert.updatedAt = now
+            try save()
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .queued))
+        }
+        let settings = try retryConfiguration(
+            parentOperationID: parentID,
+            mode: retryConfigurationMode,
+            currentPrimaryCurrency: currency
         )
+        let originalContract = try originalConfigurationContract(
+            parentOperationID: parentID, mode: retryConfigurationMode
+        )
+        if let originalContract, originalContract != SmsContractAssets.releaseID {
+            alert.status = .needsReview
+            alert.lastErrorCode = "original_configuration_adapter_unavailable"
+            alert.updatedAt = now
+            try save()
+            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+        }
+        alert.status = .processing
+        alert.attemptCount = durableAlert.attemptCount + 1
+        alert.lastAttemptAt = now
+        alert.updatedAt = now
         try save()
+        let trigger =
+            isOwnerRetry
+            ? "retry" : (allowBeyondAutomaticAttemptLimit ? "foreground_or_user" : "automatic_recovery")
+        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
+            sourceAlertID: sourceID,
+            parentOperationID: parentID,
+            trigger: trigger,
+            primaryCurrency: settings.primaryCurrency,
+            enabledProfiles: settings.enabledProfiles,
+            extractorEligibilityOverride: extractorEligibilityOverride
+        )
+        let claim = try SmsProcessingStore.claimForAdmission(
+            operationID: snapshot.operationID,
+            context: context
+        )
+        return .current(snapshot, claim)
+    }
+
+    private func requireOperationRecovery(_ alert: InboxAlert, now: Date) throws -> PreparedProcessing {
+        alert.status = .needsReview
+        alert.lastErrorCode = "saved_operation_requires_explicit_retry"
+        alert.updatedAt = now
+        try save()
+        return .receipt(IngestionReceipt(alertID: alert.id, disposition: .processingIncomplete))
+    }
+
+    private func retryConfiguration(
+        parentOperationID: UUID?,
+        mode: String,
+        currentPrimaryCurrency: String
+    ) throws -> (primaryCurrency: String, enabledProfiles: [String]) {
+        guard mode == "original", let parentOperationID else {
+            return (
+                currentPrimaryCurrency,
+                currentPrimaryCurrency == "INR" ? ["core-en", "india"] : ["core-en"]
+            )
+        }
+        let parentID = parentOperationID
+        guard
+            let operation = try context.fetch(
+                FetchDescriptor<SmsProcessingOperation>(
+                    predicate: #Predicate { $0.id == parentID }
+                )
+            ).first,
+            let document = try? JSONSerialization.jsonObject(
+                with: Data(operation.configurationJSON.utf8)
+            ) as? [String: Any],
+            let currencyContext = document["currency_context"] as? [String: Any],
+            let primaryCurrency = currencyContext["primary_currency"] as? String,
+            CurrencyFormatter.supportedScales[primaryCurrency] != nil,
+            let enabledProfiles = currencyContext["enabled_profile_ids"] as? [String],
+            !enabledProfiles.isEmpty,
+            enabledProfiles.allSatisfy({ ["core-en", "india"].contains($0) })
+        else { throw AlertIngestionError.persistenceFailed }
+        return (primaryCurrency, enabledProfiles)
+    }
+
+    private func originalConfigurationContract(
+        parentOperationID: UUID?,
+        mode: String
+    ) throws -> String? {
+        guard mode == "original", let parentOperationID else { return nil }
+        let parentID = parentOperationID
+        guard
+            let operation = try context.fetch(
+                FetchDescriptor<SmsProcessingOperation>(
+                    predicate: #Predicate { $0.id == parentID }
+                )
+            ).first,
+            let document = try? JSONSerialization.jsonObject(
+                with: Data(operation.configurationJSON.utf8)
+            ) as? [String: Any],
+            let contract = document["contract"] as? String
+        else { throw AlertIngestionError.persistenceFailed }
+        return contract
     }
 
     private func findDuplicate(contentDigest: String, receivedAt: Date) throws -> InboxAlert? {
@@ -745,47 +672,6 @@ final class AlertIngestionService {
                 && candidate.status != .duplicate
                 && abs(candidate.receivedAt.timeIntervalSince(receivedAt)) <= Self.duplicateWindow
         }
-    }
-
-    private func makeFilterRun(
-        trace: AlertFilterTrace,
-        alertID: UUID
-    ) throws -> DeterministicFilterRun {
-        let priorRuns = try context.fetch(FetchDescriptor<DeterministicFilterRun>())
-        let persistedStages = trace.stages.map(PersistedAlertFilterStage.init)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let stageData: Data
-        do {
-            stageData = try encoder.encode(persistedStages)
-        } catch {
-            throw AlertIngestionError.persistenceFailed
-        }
-        guard let stagesJSON = String(data: stageData, encoding: .utf8) else {
-            throw AlertIngestionError.persistenceFailed
-        }
-
-        let decisionRawValue: String
-        switch trace.result.decision {
-        case .eligible:
-            decisionRawValue = "eligible"
-        case .needsReview:
-            decisionRawValue = "needs_review"
-        case .rejectAndErase:
-            decisionRawValue = "reject_and_erase"
-        }
-
-        return DeterministicFilterRun(
-            alertID: alertID,
-            evaluationIndex: priorRuns.count { $0.alertID == alertID } + 1,
-            evaluatedAt: .now,
-            rulesVersion: AlertFilter.rulesVersion,
-            decisionRawValue: decisionRawValue,
-            rejectionCodeRawValue: trace.result.rejectionCode?.rawValue,
-            completedStages: trace.result.completedStages,
-            senderWasUsed: trace.senderWasUsed,
-            stagesJSON: stagesJSON
-        )
     }
 
     private func findAlert(id: UUID) throws -> InboxAlert? {
@@ -845,71 +731,6 @@ final class AlertIngestionService {
 
     private func findTransaction(id: UUID) throws -> Transaction? {
         try context.fetch(FetchDescriptor<Transaction>()).first { $0.id == id }
-    }
-
-    private func preserveOwnerChangeIfNeeded(
-        alert: InboxAlert,
-        transactionIDAtStart: UUID?,
-        transactionUpdatedAtAtStart: Date?,
-        extractionRun: ExtractionRun
-    ) throws -> IngestionReceipt? {
-        guard let transactionIDAtStart, let transactionUpdatedAtAtStart else { return nil }
-
-        let currentTransaction = try findTransaction(id: transactionIDAtStart)
-        let ownerChangedOrDeletedTransaction =
-            alert.transactionID != transactionIDAtStart
-            || currentTransaction == nil
-            || currentTransaction?.isEdited == true
-            || currentTransaction?.updatedAt != transactionUpdatedAtAtStart
-        guard ownerChangedOrDeletedTransaction else { return nil }
-
-        extractionRun.recordValidationNotPerformed()
-        let disposition: IngestionDisposition
-        let runDisposition: ExtractionRunDisposition
-        if alert.status == .imported || currentTransaction?.reviewState == .confirmed {
-            disposition = .imported
-            runDisposition = .imported
-        } else {
-            disposition = .needsReview
-            runDisposition = .needsReview
-        }
-        extractionRun.complete(
-            safeResultCode: "owner_change_preserved",
-            disposition: runDisposition,
-            at: .now
-        )
-        try save()
-        return IngestionReceipt(alertID: alert.id, disposition: disposition)
-    }
-
-    private func resolveAccount(label: String, sender: String, body: String) throws -> Account {
-        let normalized = AccountNormalizer.normalize(label: label, sender: sender, body: body)
-        let descriptor = FetchDescriptor<Account>()
-        if let existing = try context.fetch(descriptor).first(where: { account in
-            account.kind == normalized.kind
-                && account.suffix == normalized.suffix
-                && !account.bank.isEmpty
-                && !normalized.bank.isEmpty
-                && account.bank == normalized.bank
-        }) {
-            return existing
-        }
-
-        let account = Account(
-            name: normalized.name,
-            bank: normalized.bank,
-            kind: normalized.kind,
-            suffix: normalized.suffix
-        )
-        context.insert(account)
-        return account
-    }
-
-    private func reject(_ alert: InboxAlert, code: String) {
-        alert.status = .rejected
-        alert.rejectionCode = code
-        alert.lastErrorCode = nil
-        alert.eraseSensitiveEvidence()
     }
 
     private func save() throws {

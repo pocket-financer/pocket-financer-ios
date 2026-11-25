@@ -147,6 +147,7 @@ final class AppDatabase {
 
         do {
             let database = try await attempt.task.value
+            try await database.prepareForProcessing()
             if let sharedInstance {
                 if sharedOpenAttempt === attempt {
                     sharedOpenAttempt = nil
@@ -167,7 +168,7 @@ final class AppDatabase {
     }
 
     nonisolated init(inMemory: Bool = false, storeURL explicitStoreURL: URL? = nil) throws {
-        let schema = Schema(versionedSchema: PocketFinancerSchemaV4.self)
+        let schema = Schema(versionedSchema: PocketFinancerSchemaV7.self)
 
         if inMemory {
             let configuration = ModelConfiguration(
@@ -246,5 +247,11 @@ final class AppDatabase {
         } catch {
             throw AppDatabaseStartupFailure(classifying: error, phase: .applyingFileProtection)
         }
+    }
+
+    func prepareForProcessing() async throws {
+        let store = SmsProcessingStore(modelContainer: container)
+        try await store.backfillLegacyTransactions()
+        try await store.recoverExpiredOperations()
     }
 }

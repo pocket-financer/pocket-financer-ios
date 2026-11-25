@@ -1,0 +1,18 @@
+{
+  "automatic_gate": "exactly_one_owned_match",
+  "catalog_contract": "local-opaque-owned-account-catalog",
+  "contract": "pocketfinancer.account-resolution-profile/1",
+  "default_account_allowed": false,
+  "normalization": {
+    "account_reference": "NFKC-trim-casefold-then-first-VPA-else-exactly-one-masked-or-bare-3-to-8-decimal-digit-suffix",
+    "catalog_key": "vpa-or-suffix-type-prefix-plus-normalized-reference",
+    "comparison": "exact-normalized-key-equality",
+    "unicode": "NFKC"
+  },
+  "statuses": [
+    "missing",
+    "unresolved",
+    "ambiguous",
+    "uniquely_resolved"
+  ]
+}

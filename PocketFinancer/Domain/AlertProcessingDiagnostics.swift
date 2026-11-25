@@ -140,104 +140,188 @@ enum AlertProcessingDiagnostics {
                 title: "No structured extraction produced",
                 detail: "The local model did not return a transaction structure that Pocket Financer could inspect."
             )
-        case EvidenceValidationIssue.modelRejected.rawValue:
+        case "modelRejected", "extractor_abstained":
             .init(
-                title: "Model classified this as non-financial",
-                detail: "That model-only decision is untrusted, so the original evidence remains available for review."
+                title: "Extractor abstained",
+                detail:
+                    "The model abstained rather than guessing, so the original evidence "
+                    + "remains available for review."
             )
-        case EvidenceValidationIssue.explicitlyUnsuccessfulTransaction.rawValue:
+        case "explicitlyUnsuccessfulTransaction":
             .init(
                 title: "Transaction was explicitly unsuccessful",
                 detail:
-                    "Failed, declined, unsuccessful, or negated wording prevented the model output from creating a transaction."
+                    "Failed, declined, unsuccessful, or negated wording prevented "
+                    + "the model output from creating a transaction."
             )
-        case EvidenceValidationIssue.invalidDirection.rawValue:
+        case "invalidDirection", "extractor_direction_invalid":
             .init(
-                title: "Invalid direction",
-                detail: "The output direction was neither debit nor credit."
+                title: "Direction was invalid or ungrounded",
+                detail:
+                    "The debit or credit direction was invalid or not grounded in wording "
+                    + "from the alert body."
             )
-        case EvidenceValidationIssue.directionNotGrounded.rawValue:
+        case "directionNotGrounded":
             .init(
                 title: "Direction was not grounded",
                 detail: "The debit or credit direction was not supported by wording in the alert body."
             )
-        case EvidenceValidationIssue.amountNotGrounded.rawValue:
+        case "amountNotGrounded":
             .init(
                 title: "Amount was not grounded",
                 detail: "The extracted amount was not copied exactly from the alert body."
             )
-        case EvidenceValidationIssue.amountCandidateMismatch.rawValue:
+        case "amountCandidateMismatch", "extractor_amount_value_disagreement":
             .init(
-                title: "Amount was not the transaction value",
+                title: "Extracted amount disagreed with evidence",
                 detail:
-                    "The selected amount did not match the one plausible transaction amount after balance and limit figures were excluded."
+                    "The declared amount value did not match deterministic parsing of its "
+                    + "selected evidence span."
             )
-        case EvidenceValidationIssue.ambiguousTransactionAmount.rawValue:
+        case "ambiguousTransactionAmount":
             .init(
                 title: "Transaction amount was ambiguous",
                 detail:
-                    "The alert contained zero or multiple plausible transaction amounts, so no amount was accepted automatically."
+                    "The alert contained zero or multiple plausible transaction amounts, "
+                    + "so no amount was accepted automatically."
             )
-        case EvidenceValidationIssue.invalidAmount.rawValue:
+        case "invalidAmount", "extractor_amount_invalid", "extractor_currency_invalid":
             .init(
-                title: "Amount was invalid",
-                detail: "The grounded amount could not be parsed safely into minor currency units."
+                title: "Amount or currency was invalid",
+                detail: "The grounded amount or currency could not be validated safely against the alert body."
             )
-        case EvidenceValidationIssue.merchantNotGrounded.rawValue:
+        case "merchantNotGrounded", "extractor_counterparty_invalid":
             .init(
-                title: "Merchant was not grounded",
-                detail: "The extracted merchant or counterparty was not copied exactly from the alert body."
+                title: "Counterparty was invalid or ungrounded",
+                detail:
+                    "The extracted merchant or counterparty did not match its source evidence "
+                    + "in the alert body."
             )
-        case EvidenceValidationIssue.accountNotGrounded.rawValue:
+        case "accountNotGrounded", "extractor_account_reference_invalid":
             .init(
-                title: "Account was not grounded",
-                detail: "The extracted account or card label was missing or not copied exactly from the alert body."
+                title: "Account reference was invalid or ungrounded",
+                detail:
+                    "The extracted account or card label did not normalize cleanly from its "
+                    + "evidence span in the alert."
             )
-        case EvidenceValidationIssue.invalidAccountEvidence.rawValue:
+        case "invalidAccountEvidence":
             .init(
                 title: "Account evidence was too vague",
                 detail:
-                    "The extracted account or card text did not include at least three visible suffix digits, so it could not identify a usable local account."
+                    "The extracted account or card text did not include at least three visible "
+                    + "suffix digits, so it could not identify a usable local account."
             )
-        case EvidenceValidationIssue.dateNotGrounded.rawValue:
+        case "dateNotGrounded":
             .init(
                 title: "Date was not grounded",
                 detail: "The extracted date text was not copied exactly from the alert body."
             )
-        case EvidenceValidationIssue.invalidDate.rawValue:
+        case "invalidDate":
             .init(
                 title: "Date was invalid",
                 detail: "The grounded date text could not be parsed safely."
             )
-        case AlertRejectionCode.missingAmount.rawValue:
+        case "extractor_evidence_invalid", "extractor_evidence_out_of_bounds", "extractor_evidence_mismatch":
+            .init(
+                title: "Source evidence mismatch",
+                detail: "An extracted span did not match exact Unicode-scalar substrings in the source message."
+            )
+        case "extractor_none", "tombstoned_none":
+            .init(
+                title: "No completed transaction",
+                detail:
+                    "The extractor classified this alert as non-transactional and erased "
+                    + "sensitive text into a tombstone."
+            )
+        case "tombstoned_excluded":
+            .init(
+                title: "Excluded before model invocation",
+                detail:
+                    "The deterministic prefilter excluded this alert as non-transactional "
+                    + "and erased sensitive text."
+            )
+        case "prefilter_empty", "prefilter_no_digits", "prefilter_gaming_promo",
+            "prefilter_collect_or_mandate_request", "prefilter_otp_verification",
+            "prefilter_telecom_notice", "prefilter_brokerage_eod_report", "prefilter_no_financial_cue":
+            .init(
+                title: "Excluded by local prefilter",
+                detail:
+                    "The deterministic prefilter identified non-transactional content "
+                    + "and erased sensitive body text."
+            )
+        case "account_resolution_unresolved":
+            .init(
+                title: "Account not yet linked",
+                detail:
+                    "Confirm or create the local account in Review; future alerts for this "
+                    + "suffix or VPA can auto-save."
+            )
+        case "account_resolution_ambiguous":
+            .init(
+                title: "Multiple accounts matched",
+                detail: "More than one local account matched this reference, so manual confirmation is required."
+            )
+        case "duplicate_possible", "duplicate_already_persisted":
+            .init(
+                title: "Possible duplicate detected",
+                detail:
+                    "A matching transaction was already persisted within the 5-minute "
+                    + "duplicate window or for this alert."
+            )
+        case "persistence_all_gates_passed":
+            .init(
+                title: "Saved automatically",
+                detail: "All grounding, account-resolution, and duplicate checks passed for automatic local save."
+            )
+        case "configuration_integrity":
+            .init(
+                title: "Asset integrity verification failed",
+                detail: "Bundled SMS pipeline contracts did not match their manifest digests, so processing stopped."
+            )
+        case "runtime_unavailable", "runtime_ineligible":
+            .init(
+                title: "Local model runtime unavailable",
+                detail: "On-device Apple Foundation Models were not available; the alert remains retained locally."
+            )
+        case "runtime_output_truncated":
+            .init(
+                title: "Model output truncated",
+                detail: "The local model response did not finish cleanly within output limits and was rejected."
+            )
+        case "operation_interrupted", "user_cancelled", "process_interrupted":
+            .init(
+                title: "Processing interrupted",
+                detail: "Processing was interrupted before settlement; evidence remains retained for retry."
+            )
+        case "missing_amount":
             .init(title: "No currency amount", detail: "The body did not contain an amount marked with Rs, INR, or ₹.")
-        case AlertRejectionCode.missingAccount.rawValue:
+        case "missing_account":
             .init(
                 title: "No account reference",
                 detail: "The body did not contain a supported masked account or card reference.")
-        case AlertRejectionCode.missingTransactionVerb.rawValue:
+        case "missing_transaction_verb":
             .init(
                 title: "No completed transaction wording",
                 detail: "The body did not contain a supported completed-transaction verb.")
-        case AlertRejectionCode.oneTimePassword.rawValue:
+        case "one_time_password":
             .init(
                 title: "OTP or verification alert",
                 detail: "The deterministic filter found one-time password or verification-code wording.")
-        case AlertRejectionCode.collectRequest.rawValue:
+        case "collect_request":
             .init(
                 title: "Payment request",
                 detail: "The deterministic filter found collect-request or mandate-request wording.")
-        case AlertRejectionCode.promotion.rawValue:
+        case "promotion":
             .init(
                 title: "Promotional message",
                 detail: "The deterministic filter found high-confidence offer or solicitation wording.")
-        case AlertRejectionCode.unsuccessfulTransaction.rawValue:
+        case "unsuccessful_transaction":
             .init(
                 title: "Unsuccessful transaction",
                 detail:
                     "The deterministic filter found failed, declined, unsuccessful, or explicitly negated transaction wording."
             )
-        case AlertRejectionCode.emptyBody.rawValue:
+        case "empty_body":
             .init(title: "Empty alert", detail: "No alert body was available to inspect.")
         case "persistence_failed":
             .init(

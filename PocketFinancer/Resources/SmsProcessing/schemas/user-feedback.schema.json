@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.user-feedback/3",
+  "title": "Append-Only Source-Span SMS Review Feedback V3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "action_id", "operation_id_hash", "review_case_id_hash", "expected_review_revision", "resulting_review_revision", "action", "actor_id_hash", "field_revisions", "created_at_epoch_ms", "previous_event_hash", "canonical_label_id", "canonical_label_revision"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.user-feedback/3"},
+    "action_id": {"$ref": "#/$defs/uuid"},
+    "operation_id_hash": {"$ref": "#/$defs/sha256"},
+    "review_case_id_hash": {"$ref": "#/$defs/sha256"},
+    "expected_review_revision": {"type": "integer", "minimum": 0},
+    "resulting_review_revision": {"type": "integer", "minimum": 1},
+    "action": {"enum": ["confirm", "correct", "reject", "save_draft", "retry"]},
+    "actor_id_hash": {"$ref": "#/$defs/sha256"},
+    "field_revisions": {"type": "array", "items": {"$ref": "#/$defs/field_revision"}},
+    "created_at_epoch_ms": {"type": "integer", "minimum": 0},
+    "previous_event_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "canonical_label_id": {"type": ["string", "null"], "minLength": 1},
+    "canonical_label_revision": {"type": ["integer", "null"], "minimum": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"action": {"const": "correct"}}, "required": ["action"]},
+      "then": {"properties": {"field_revisions": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"action": {"enum": ["confirm", "reject", "retry"]}}, "required": ["action"]},
+      "then": {"properties": {"field_revisions": {"maxItems": 0}}}
+    },
+    {
+      "if": {"properties": {"expected_review_revision": {"const": 0}}, "required": ["expected_review_revision"]},
+      "then": {"properties": {"previous_event_hash": {"type": "null"}}},
+      "else": {"properties": {"previous_event_hash": {"$ref": "#/$defs/sha256"}}}
+    },
+    {
+      "oneOf": [
+        {"properties": {"canonical_label_id": {"type": "null"}, "canonical_label_revision": {"type": "null"}}},
+        {"properties": {"canonical_label_id": {"type": "string", "minLength": 1}, "canonical_label_revision": {"type": "integer", "minimum": 1}}}
+      ]
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_scalar", "end_scalar", "text"],
+      "properties": {
+        "start_scalar": {"type": "integer", "minimum": 0},
+        "end_scalar": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "field_revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "value", "provenance", "span", "existing_account_id"],
+      "properties": {
+        "field": {"enum": ["amount", "direction", "account", "counterparty"]},
+        "value": {},
+        "provenance": {"enum": ["source_span_selection", "user_direction_control"]},
+        "span": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]},
+        "existing_account_id": {"type": ["string", "null"], "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provenance": {"const": "user_direction_control"}}, "required": ["provenance"]},
+          "then": {"properties": {"field": {"const": "direction"}, "span": {"type": "null"}}},
+          "else": {"properties": {"span": {"$ref": "#/$defs/source_span"}}}
+        },
+        {
+          "if": {"properties": {"field": {"const": "account"}}, "required": ["field"]},
+          "then": {"properties": {"span": {"$ref": "#/$defs/source_span"}, "existing_account_id": {"type": "string", "minLength": 1}}},
+          "else": {"properties": {"existing_account_id": {"type": "null"}}}
+        }
+      ]
+    }
+  }
+}

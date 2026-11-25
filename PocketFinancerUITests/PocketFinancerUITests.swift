@@ -112,6 +112,11 @@ final class PocketFinancerUITests: XCTestCase {
         XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
         continueButton.tap()
 
+        XCTAssertTrue(app.staticTexts["Choose your primary currency"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.pickers["primary-currency-picker"].waitForExistence(timeout: 3))
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
+        continueButton.tap()
+
         XCTAssertTrue(app.staticTexts["Connect with Shortcuts"].waitForExistence(timeout: 5))
         let finishButton = app.buttons["onboarding-finish"]
         XCTAssertTrue(finishButton.waitForExistence(timeout: 3))

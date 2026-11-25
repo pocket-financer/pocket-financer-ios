@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pocketfinancer.sms-extractor-input/1",
+  "title": "PocketFinancer Direct SMS Extractor Input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "output_contract", "message", "sender_family", "primary_currency", "enabled_profile_ids", "advisory_evidence", "output_rules"],
+  "properties": {
+    "contract": {"const": "pocketfinancer.sms-extractor-input/1"},
+    "output_contract": {"const": "pocketfinancer.sms-extractor/1"},
+    "message": {"type": "string", "minLength": 1},
+    "sender_family": {"type": "string", "minLength": 1},
+    "primary_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "enabled_profile_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "advisory_evidence": {"type": "array", "items": {"$ref": "#/$defs/advisory_evidence"}},
+    "output_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["one_json_document", "decisions", "posted_required_fields", "source_spans", "transaction_time_forbidden"],
+      "properties": {
+        "one_json_document": {"const": true},
+        "decisions": {"const": ["none", "abstain", "posted"]},
+        "posted_required_fields": {"const": ["amount", "direction", "account", "counterparty"]},
+        "source_spans": {"const": "zero_based_half_open_unicode_scalars"},
+        "transaction_time_forbidden": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_scalar", "end_scalar", "text"],
+      "properties": {
+        "start_scalar": {"type": "integer", "minimum": 0},
+        "end_scalar": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "advisory_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source_span", "clause", "suggested_interpretation", "provenance", "analyzer_version"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "source_span": {"oneOf": [{"$ref": "#/$defs/source_span"}, {"type": "null"}]},
+        "clause": {"type": ["string", "null"]},
+        "suggested_interpretation": {},
+        "provenance": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["candidate_id", "analyzer_kind"],
+              "properties": {
+                "candidate_id": {"type": "string", "minLength": 1},
+                "analyzer_kind": {"const": "candidate"}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cue_id", "analyzer_kind"],
+              "properties": {
+                "cue_id": {"type": "string", "minLength": 1},
+                "analyzer_kind": {"const": "cue"}
+              }
+            }
+          ]
+        },
+        "analyzer_version": {"const": "pocketfinancer.sms-analysis/2"}
+      }
+    }
+  }
+}

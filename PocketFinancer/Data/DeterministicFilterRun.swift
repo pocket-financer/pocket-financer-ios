@@ -1,6 +1,48 @@
 import Foundation
 import SwiftData
 
+/// Schema-compatibility value types retained for `PocketFinancerSchemaV4`..`V7`.
+enum AlertRejectionCode: String, Sendable {
+    case missingAmount = "missing_amount"
+    case missingAccount = "missing_account"
+    case missingTransactionVerb = "missing_transaction_verb"
+    case oneTimePassword = "one_time_password"
+    case collectRequest = "collect_request"
+    case promotion = "promotion"
+    case unsuccessfulTransaction = "unsuccessful_transaction"
+    case emptyBody = "empty_body"
+}
+
+enum AlertFilterDecision: Equatable, Sendable {
+    case eligible
+    case needsReview
+    case rejectAndErase
+}
+
+enum AlertFilterStageID: String, CaseIterable, Sendable {
+    case nonEmptyBody
+    case oneTimePassword
+    case collectRequest
+    case unsuccessfulTransaction
+    case promotion
+    case amount
+    case account
+    case transactionVerb
+}
+
+enum AlertFilterStageState: String, Equatable, Sendable {
+    case passed
+    case failed
+    case notRun
+}
+
+struct AlertFilterStageOutcome: Equatable, Sendable {
+    let id: AlertFilterStageID
+    let title: String
+    let detail: String
+    let state: AlertFilterStageState
+}
+
 struct PersistedAlertFilterStage: Codable, Equatable, Sendable {
     let idRawValue: String
     let title: String
@@ -30,10 +72,7 @@ struct PersistedAlertFilterStage: Codable, Equatable, Sendable {
     }
 }
 
-/// The exact deterministic eligibility result captured before any model invocation.
-///
-/// Stage text and states contain no alert evidence; the source body remains on `InboxAlert`.
-/// Persisting the evaluated stages prevents later rule changes from rewriting history in UI.
+/// Preserved historical deterministic filter trace for migrated V4..V7 stores.
 @Model
 final class DeterministicFilterRun {
     @Attribute(.unique) var id: UUID

@@ -1,0 +1,11 @@
+pocketfinancer.apple-fm-extractor-prompt/1
+
+Classify the exact SMS body in the supplied extractor input. Generate one object using the guided schema. The analyzer is optional advice, not an allowlist or truth source.
+
+Use decision "posted" only for a completed transaction with an amount, debit or credit direction, and account reference grounded in the immutable SMS. Use "none" for an SMS that does not describe a completed posted transaction. Use "abstain" when a transaction may have posted but mandatory fields cannot be grounded safely.
+
+Completed bank, card, or UPI alerts phrased as "Txn Rs.X On ... Card ...", "Rs.X without OTP/PIN ...", "Sent Rs.X From ... A/c ...", or "Money Transfer:Rs X from ..." are posted with direction "debit". Credit card bill payments received and merchant refunds or reversals adjusted to a card or account are posted with direction "credit". Transaction OTPs, collect or UPI-mandate requests, upcoming autopay or bill-due notices, failed or declined attempts, balance-only or brokerage EOD reports, and promotional or gaming offers are "none".
+
+For posted, supply the amount's unsigned plain decimal value and three-letter currency, direction, account reference, and optional counterparty. For each present field, supply its exact text and zero-based half-open Unicode-scalar start and end positions in the SMS body. Do not guess source text or offsets. The amount value must equal deterministic normalization of its source text. Account and counterparty values must be derivable from their source text.
+
+For none or abstain, set every other string to "" and every offset to 0. For posted without a grounded counterparty, set all counterparty strings to "" and offsets to 0. Never supply a timestamp, confidence, rationale, or candidate ID.

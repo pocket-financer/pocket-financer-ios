@@ -1,0 +1,37 @@
+{
+  "title": "PocketFinancer Apple FM SMS extractor flat guided output",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"type": "string", "enum": ["none", "abstain", "posted"]},
+    "amount_value": {"type": "string"},
+    "amount_currency": {"type": "string"},
+    "amount_start": {"type": "integer"},
+    "amount_end": {"type": "integer"},
+    "amount_text": {"type": "string"},
+    "direction_value": {"type": "string", "enum": ["", "debit", "credit"]},
+    "direction_start": {"type": "integer"},
+    "direction_end": {"type": "integer"},
+    "direction_text": {"type": "string"},
+    "account_reference": {"type": "string"},
+    "account_start": {"type": "integer"},
+    "account_end": {"type": "integer"},
+    "account_text": {"type": "string"},
+    "counterparty_value": {"type": "string"},
+    "counterparty_start": {"type": "integer"},
+    "counterparty_end": {"type": "integer"},
+    "counterparty_text": {"type": "string"}
+  },
+  "required": [
+    "decision", "amount_value", "amount_currency", "amount_start", "amount_end",
+    "amount_text", "direction_value", "direction_start", "direction_end", "direction_text",
+    "account_reference", "account_start", "account_end", "account_text",
+    "counterparty_value", "counterparty_start", "counterparty_end", "counterparty_text"
+  ],
+  "x-order": [
+    "decision", "amount_value", "amount_currency", "amount_start", "amount_end",
+    "amount_text", "direction_value", "direction_start", "direction_end", "direction_text",
+    "account_reference", "account_start", "account_end", "account_text",
+    "counterparty_value", "counterparty_start", "counterparty_end", "counterparty_text"
+  ]
+}

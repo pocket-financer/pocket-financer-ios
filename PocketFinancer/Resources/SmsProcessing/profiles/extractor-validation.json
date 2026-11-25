@@ -1,0 +1,40 @@
+{
+  "account": {
+    "must_be_derived_from_span": true,
+    "normalization_profile": "pocketfinancer.account-resolution-profile/1"
+  },
+  "contract": "pocketfinancer.extractor-validation-profile/1",
+  "counterparty": {
+    "normalization": "NFKC-trim-casefold-collapse-whitespace",
+    "nullable": true
+  },
+  "json_language": {
+    "coercion_allowed": false,
+    "duplicate_keys_rejected_at_all_depths": true,
+    "exactly_one_document": true,
+    "markdown_allowed": false,
+    "root_object_required": true,
+    "trailing_content_allowed": false,
+    "unknown_properties_rejected": true
+  },
+  "money": {
+    "declared_value_must_equal_evidence_normalization": true,
+    "rounding_allowed": false,
+    "storage": "signed_64_bit_minor_units",
+    "supported_currency_asset": "pocketfinancer.supported-currencies/1"
+  },
+  "output_contract": "pocketfinancer.sms-extractor/1",
+  "runtime": {
+    "answer_token_limit": 512,
+    "decoding": "greedy",
+    "generation_mode": "DIRECT_NON_THINKING",
+    "parser_deadline_ms": 0,
+    "raw_output_utf8_byte_limit": 16384
+  },
+  "span_coordinates": {
+    "base": 0,
+    "end": "exclusive",
+    "exact_text_required": true,
+    "unit": "unicode_scalar"
+  }
+}

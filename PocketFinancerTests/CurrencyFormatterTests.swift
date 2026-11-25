@@ -25,4 +25,36 @@ final class CurrencyFormatterTests: XCTestCase {
         XCTAssertFalse(formatted.isEmpty)
         XCTAssertTrue(formatted.contains("₹") || formatted.contains("INR"))
     }
+
+    @MainActor
+    func testParsesEditableMajorUnitsWithoutRounding() {
+        XCTAssertEqual(
+            CurrencyFormatter.minorUnits(
+                fromMajorUnitText: "100.50",
+                currencyCode: "INR",
+                locale: Locale(identifier: "en_IN")
+            ),
+            10_050
+        )
+        XCTAssertEqual(
+            CurrencyFormatter.minorUnits(
+                fromMajorUnitText: "100,50",
+                currencyCode: "EUR",
+                locale: Locale(identifier: "de_DE")
+            ),
+            10_050
+        )
+        XCTAssertNil(
+            CurrencyFormatter.minorUnits(
+                fromMajorUnitText: "100.501",
+                currencyCode: "INR"
+            )
+        )
+        XCTAssertNil(
+            CurrencyFormatter.minorUnits(
+                fromMajorUnitText: "-1",
+                currencyCode: "INR"
+            )
+        )
+    }
 }

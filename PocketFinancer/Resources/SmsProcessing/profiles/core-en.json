@@ -1,0 +1,14 @@
+{
+  "contract": "pocketfinancer.analyzer-profile/1",
+  "profile_id": "core-en",
+  "revision": 1,
+  "scope": "country-neutral English structural cues",
+  "currency_markers": {"EUR": ["€"], "GBP": ["£"]},
+  "ambiguous_currency_markers": ["$", "¥"],
+  "grouping": ["western"],
+  "transaction_terms": [
+    "transaction", "payment", "purchase", "transfer", "debit", "credit",
+    "paid", "spent", "received", "withdrawn", "deposited", "refunded"
+  ],
+  "rails": {}
+}

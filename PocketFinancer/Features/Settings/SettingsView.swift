@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppPreferenceKey.completedOnboarding) private var completedOnboarding = true
+    @State private var primaryCurrency = PrimaryCurrencySettings.currentCode
     @Query private var alerts: [InboxAlert]
     @State private var retrying = false
     @State private var testingModel = false
@@ -25,6 +26,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Money and locale") {
+                    Picker("Primary currency", selection: $primaryCurrency) {
+                        ForEach(PrimaryCurrencySettings.supportedCodes, id: \.self) { code in
+                            Text(code).tag(code)
+                        }
+                    }
+                    Button("Confirm \(primaryCurrency) as Primary Currency") {
+                        PrimaryCurrencySettings.confirm(primaryCurrency)
+                        resultMessage = "Primary currency confirmed for future alert processing."
+                    }
+                    .disabled(PrimaryCurrencySettings.confirmedCode == primaryCurrency)
+                    Text(
+                        "This is used only when a message has no explicit currency. Each processing attempt stores its own immutable setting snapshot."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+
                 Section("On-device intelligence") {
                     CurrentModelStatusView()
                         .padding(.vertical, 6)
@@ -138,6 +157,10 @@ struct SettingsView: View {
     }
 
     private func retrySavedAlerts() async {
+        guard PrimaryCurrencySettings.confirmedCode != nil else {
+            resultMessage = "Confirm a primary currency before processing saved alerts."
+            return
+        }
         retrying = true
         defer { retrying = false }
         let service = AlertIngestionService(context: modelContext)
@@ -206,7 +229,7 @@ struct AutomationSetupView: View {
                 AutomationStep(
                     number: 5,
                     text:
-                        "Tap the blue Message Body slot, choose Shortcut Input, then choose its Content property. Leave Sender and Received At empty."
+                        "Clear the Message Body slot, then insert the Shortcut Input variable and select its Content property. The final slot may display Shortcut Input and Content together as one property-qualified variable; do not insert either variable a second time. Leave Sender and Received At empty."
                 )
                 AutomationStep(
                     number: 6,

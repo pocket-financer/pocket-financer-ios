@@ -1,6 +1,37 @@
 import Foundation
 import SwiftData
 
+/// Schema-compatibility value types retained for `PocketFinancerSchemaV2`..`V7`.
+enum DraftClassification: String, Sendable {
+    case transaction
+    case nonTransaction = "non_transaction"
+}
+
+struct ParsedAlertDraft: Equatable, Sendable {
+    let classification: DraftClassification
+    let direction: String
+    let amountText: String
+    let merchant: String
+    let accountLabel: String
+    let occurredAtText: String
+    let currencyCode: String
+}
+
+enum EvidenceValidationStage: String, CaseIterable, Sendable {
+    case classification
+    case direction
+    case amount
+    case merchant
+    case account
+    case date
+}
+
+enum EvidenceValidationStageState: String, Sendable {
+    case passed
+    case failed
+    case notRun = "not_run"
+}
+
 enum ExtractionValidationOutcome: String, CaseIterable, Sendable {
     case notPerformed = "not_performed"
     case passed
@@ -13,7 +44,7 @@ enum ExtractionRunDisposition: String, CaseIterable, Sendable {
     case needsReview = "needs_review"
 }
 
-/// A local, owner-visible snapshot of one parser attempt.
+/// A local, owner-visible snapshot of one historical parser attempt.
 ///
 /// `exactInstructions`, `exactRequest`, and the draft fields are sensitive financial
 /// evidence. They belong only in the protected SwiftData store and must never be logged.
@@ -145,46 +176,6 @@ final class ExtractionRun {
         responseReceivedAt.map { max(0, $0.timeIntervalSince(startedAt)) }
     }
 
-    func recordParserDraft(_ draft: ParsedAlertDraft, receivedAt: Date) {
-        guard responseReceivedAt == nil else { return }
-        responseReceivedAt = receivedAt
-        draftClassificationRawValue = draft.classification.rawValue
-        draftDirection = draft.direction
-        draftAmountText = draft.amountText
-        draftMerchant = draft.merchant
-        draftAccountLabel = draft.accountLabel
-        draftOccurredAtText = draft.occurredAtText
-        draftCurrencyCode = draft.currencyCode
-    }
-
-    func recordValidation(_ report: EvidenceValidationReport) {
-        guard validationOutcomeRawValue == nil else { return }
-        validationClassificationStateRawValue = report.state(for: .classification).rawValue
-        validationDirectionStateRawValue = report.state(for: .direction).rawValue
-        validationAmountStateRawValue = report.state(for: .amount).rawValue
-        validationMerchantStateRawValue = report.state(for: .merchant).rawValue
-        validationAccountStateRawValue = report.state(for: .account).rawValue
-        validationDateStateRawValue = report.state(for: .date).rawValue
-        switch report.validatedDraft {
-        case .none:
-            validationOutcomeRawValue = ExtractionValidationOutcome.failed.rawValue
-        case .some:
-            validationOutcomeRawValue = ExtractionValidationOutcome.passed.rawValue
-        }
-    }
-
-    func recordValidationNotPerformed() {
-        guard validationOutcomeRawValue == nil else { return }
-        let notRun = EvidenceValidationStageState.notRun.rawValue
-        validationClassificationStateRawValue = notRun
-        validationDirectionStateRawValue = notRun
-        validationAmountStateRawValue = notRun
-        validationMerchantStateRawValue = notRun
-        validationAccountStateRawValue = notRun
-        validationDateStateRawValue = notRun
-        validationOutcomeRawValue = ExtractionValidationOutcome.notPerformed.rawValue
-    }
-
     func validationState(for stage: EvidenceValidationStage) -> EvidenceValidationStageState? {
         let rawValue: String?
         switch stage {
@@ -202,30 +193,5 @@ final class ExtractionRun {
             rawValue = validationDateStateRawValue
         }
         return rawValue.flatMap(EvidenceValidationStageState.init(rawValue:))
-    }
-
-    func recordAcceptedTransaction(_ transaction: Transaction) {
-        guard acceptedTransactionID == nil else { return }
-        acceptedTransactionID = transaction.id
-        acceptedAmountMinorUnits = transaction.amountMinorUnits
-        acceptedCurrencyCode = transaction.currencyCode
-        acceptedDirectionRawValue = transaction.direction.rawValue
-        acceptedMerchant = transaction.merchant
-        acceptedAccountLabel = transaction.accountLabel
-        acceptedOccurredAt = transaction.occurredAt
-        acceptedReviewStateRawValue = transaction.reviewState.rawValue
-        acceptedAmountEvidenceText = transaction.amountEvidenceText
-        acceptedDateEvidenceText = transaction.dateEvidenceText
-    }
-
-    func complete(
-        safeResultCode: String,
-        disposition: ExtractionRunDisposition,
-        at completedAt: Date
-    ) {
-        guard self.completedAt == nil else { return }
-        self.safeResultCode = safeResultCode
-        self.terminalDispositionRawValue = disposition.rawValue
-        self.completedAt = completedAt
     }
 }

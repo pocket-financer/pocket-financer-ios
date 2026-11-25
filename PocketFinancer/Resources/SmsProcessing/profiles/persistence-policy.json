@@ -1,0 +1,21 @@
+{
+  "contract": "pocketfinancer.persistence-policy/1",
+  "default_rollout_mode": "automatic",
+  "automatic_persistence_enabled": true,
+  "complete_posted_destination": "transactions",
+  "exception_destination": "review",
+  "duplicate_destination": "review",
+  "duplicate_window_ms": 300000,
+  "valid_none_destination": "tombstoned_none",
+  "prefilter_excluded_destination": "tombstoned_excluded",
+  "valid_none_review_case_created": false,
+  "retain_rejected_body": false,
+  "transaction_write": "atomic_with_operation_settlement",
+  "retry_behavior": "new_operation_with_parent_operation_id",
+  "review_contract": "pocketfinancer.review-case/2",
+  "processing_result_contract": "pocketfinancer.processing-result/3",
+  "requires_unique_existing_account": true,
+  "requires_clear_duplicate_assessment": true,
+  "allows_automatic_account_creation": false,
+  "allows_default_account_fallback": false
+}

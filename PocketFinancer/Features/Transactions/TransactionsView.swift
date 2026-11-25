@@ -58,17 +58,9 @@ struct TransactionsView: View {
                     )
                 } else {
                     List {
-                        if !reviewTransactions.isEmpty || !reviewAlerts.isEmpty {
-                            Section("Review Required") {
-                                ForEach(reviewTransactions) { transaction in
-                                    NavigationLink {
-                                        TransactionDetailView(transaction: transaction)
-                                    } label: {
-                                        ReviewTransactionRow(transaction: transaction)
-                                    }
-                                }
-
-                                ForEach(reviewAlerts) { alert in
+                        if !processingAlerts.isEmpty {
+                            Section("Processing") {
+                                ForEach(processingAlerts) { alert in
                                     NavigationLink {
                                         AlertProcessingDetailView(alert: alert)
                                     } label: {
@@ -78,9 +70,17 @@ struct TransactionsView: View {
                             }
                         }
 
-                        if !processingAlerts.isEmpty {
-                            Section("Processing") {
-                                ForEach(processingAlerts) { alert in
+                        if !reviewTransactions.isEmpty || !reviewAlerts.isEmpty {
+                            Section("Needs Review") {
+                                ForEach(reviewTransactions) { transaction in
+                                    NavigationLink {
+                                        TransactionDetailView(transaction: transaction)
+                                    } label: {
+                                        ReviewTransactionRow(transaction: transaction)
+                                    }
+                                }
+
+                                ForEach(reviewAlerts) { alert in
                                     NavigationLink {
                                         AlertProcessingDetailView(alert: alert)
                                     } label: {
@@ -236,8 +236,20 @@ private struct AlertQueueRow: View {
             "The alert exceeded the local model context"
         case "model_generation_failed":
             "No safe extraction was produced"
-        case EvidenceValidationIssue.modelRejected.rawValue:
+        case "extractor_abstained", "modelRejected":
             "The model was uncertain; evidence was retained"
+        case "account_resolution_unresolved":
+            "Confirm which local account this used"
+        case "account_resolution_ambiguous":
+            "More than one local account matched"
+        case "duplicate_possible", "duplicate_already_persisted":
+            "Similar recent transaction needs review"
+        case "configuration_integrity":
+            "Pipeline assets failed integrity verification"
+        case "runtime_unavailable":
+            "Local extractor runtime was unavailable"
+        case "runtime_output_truncated":
+            "Model output exceeded token limit"
         default:
             "Evidence is retained locally"
         }
