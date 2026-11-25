@@ -19,8 +19,8 @@ final class StructuralSmsAnalyzerTests: XCTestCase {
 
     func testAnalyzerExtractsAmountDirectionAccountVpaAndCounterpartyAndFiltersStopWords() throws {
         let body =
-            "Rs.1,23,456.78 debited from a/c XXXXXX1234 via user.name@synthbank at Demo Store; "
-            + "card ending 9876 available balance INR 5,000.00."
+            "Rs.1,23,456.78 debited from a/c XXXXXX1234 via UPI user.name@synthbank, at Demo Store; "
+            + "to your account, card ending 9876 available balance INR 5,000.00."
         let (analysis, _) = try analyze(body)
 
         let amounts = analysis.candidates.filter { $0.kind == .amount }
@@ -94,9 +94,12 @@ final class StructuralSmsAnalyzerTests: XCTestCase {
         XCTAssertTrue(StructuralClauseSegmenter.clauses(in: "").isEmpty)
 
         let segmented = StructuralClauseSegmenter.clauses(
-            in: "Line one.\nLine two; however line three!"
+            in: "Line one.\nLine two; line three! Part four however part five."
         )
-        XCTAssertEqual(segmented.map(\.evidence.text), ["Line one.", "Line two;", "line three!"])
+        XCTAssertEqual(
+            segmented.map(\.evidence.text),
+            ["Line one.", "Line two;", "line three!", "Part four", "part five."]
+        )
 
         let view = SmsStructuralView("Straße  \t INR 10.00")
         XCTAssertEqual(view.normalized, "strasse inr 10.00")

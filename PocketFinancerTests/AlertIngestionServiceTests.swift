@@ -382,7 +382,7 @@ final class AlertIngestionServiceTests: XCTestCase {
         let laterDistinct = try service.enqueue(
             body: "HDFC Bank:\nRs.500.00 debited from a/c XXXXXX0000.",
             sender: "AX-HDFCBK",
-            receivedAt: TestFixtures.receivedAt.addingTimeInterval(AlertIngestionService.duplicateWindow + 1),
+            receivedAt: TestFixtures.receivedAt.addingTimeInterval(AlertIngestionService.duplicateWindow + 5),
             sourceApplication: "Messages",
             origin: .shortcut
         )
@@ -394,7 +394,9 @@ final class AlertIngestionServiceTests: XCTestCase {
             FetchDescriptor<InboxAlert>(sortBy: [SortDescriptor(\.receivedAt)])
         )
         XCTAssertEqual(alerts.count, 3)
+        XCTAssertEqual(alerts[1].status, .needsReview)
         XCTAssertEqual(alerts[1].duplicateOfAlertID, alerts[0].id)
+        XCTAssertEqual(alerts[1].lastErrorCode, "possible_duplicate_heuristic_match")
         XCTAssertNil(alerts[2].duplicateOfAlertID)
         XCTAssertTrue(alerts.allSatisfy { !$0.rawBody.isEmpty })
         await Task.yield()
