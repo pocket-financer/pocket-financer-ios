@@ -3,6 +3,7 @@ import XCTest
 
 @testable import PocketFinancer
 
+@MainActor
 final class SmsReviewProjectionTests: XCTestCase {
     private let source = "🔔 INR 1,250.00 debited from XX1234 at Café"
 
@@ -46,7 +47,6 @@ final class SmsReviewProjectionTests: XCTestCase {
         XCTAssertNil(ambiguous.resolvedAccountID)
     }
 
-    @MainActor
     func testApplyingCorrectionsUpdatesFieldsResetsAccountResolutionAndRevalidatesSpans() throws {
         let multiSource = "INR 1,250.00 debited or INR 50.00 credited on XX1234 or XX5678 at Café"
         let base = try XCTUnwrap(

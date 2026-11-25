@@ -210,7 +210,7 @@ final class AppStartupAndStorageTests: XCTestCase {
             suffix: "1234",
             now: TestFixtures.receivedAt
         )
-        let transaction = Transaction(
+        let transaction = PocketFinancer.Transaction(
             amountMinorUnits: 50_000,
             currencyCode: "INR",
             merchant: "Demo Store",
@@ -404,7 +404,7 @@ final class AppStartupAndStorageTests: XCTestCase {
             StorageDiagnostic(pending: 0, needsReview: 0, imported: 0, rejected: 0, duplicates: 0)
         )
         XCTAssertTrue(try context.fetch(FetchDescriptor<InboxAlert>()).isEmpty)
-        XCTAssertTrue(try context.fetch(FetchDescriptor<Transaction>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<PocketFinancer.Transaction>()).isEmpty)
         XCTAssertTrue(try context.fetch(FetchDescriptor<Account>()).isEmpty)
         XCTAssertTrue(try context.fetch(FetchDescriptor<ExtractionRun>()).isEmpty)
         XCTAssertTrue(try context.fetch(FetchDescriptor<StructuredGenerationSnapshot>()).isEmpty)
@@ -440,7 +440,7 @@ final class AppStartupAndStorageTests: XCTestCase {
         }
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
-        let legacySchema = Schema([InboxAlert.self, Transaction.self, Account.self])
+        let legacySchema = Schema([InboxAlert.self, PocketFinancer.Transaction.self, Account.self])
         let expectedID = UUID()
 
         try autoreleasepool {

@@ -84,6 +84,7 @@ final class CurrencyAndDomainTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testCurrencyProfileRegistryParsesExactMinorUnitsAndRejectsInvalidInputs() {
         XCTAssertEqual(
             CurrencyProfileRegistry.parse(
@@ -98,10 +99,12 @@ final class CurrencyAndDomainTests: XCTestCase {
                 provenance: "explicit_code"
             )
         )
-        XCTAssertEqual(
-            CurrencyProfileRegistry.parse(number: "2500", currency: "JPY", provenance: "explicit_code")?.minorUnits,
-            2500
-        )
+        let jpyMinorUnits = CurrencyProfileRegistry.parse(
+            number: "2500",
+            currency: "JPY",
+            provenance: "explicit_code"
+        )?.minorUnits
+        XCTAssertEqual(jpyMinorUnits, 2500)
         XCTAssertNil(
             CurrencyProfileRegistry.parse(number: "2500.5", currency: "JPY", provenance: "explicit_code")
         )
@@ -113,6 +116,7 @@ final class CurrencyAndDomainTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testPrimaryCurrencyRequiresExplicitConfirmationAndSelectsProfiles() {
         let restore = TestFixtures.usePrimaryCurrency(nil)
         defer { restore() }

@@ -12,7 +12,8 @@ private struct CoordinatorReviewCase {
     let expectedReason: String
 }
 
-private actor RecordingProcessingObserver: SmsProcessingObserver {
+@MainActor
+private final class RecordingProcessingObserver: SmsProcessingObserver {
     private(set) var events: [SmsProcessingObserverEvent] = []
 
     func didReceive(_ event: SmsProcessingObserverEvent) async {
@@ -72,7 +73,7 @@ final class SmsProcessingCoordinatorTests: XCTestCase {
         XCTAssertEqual(transactionIDs.count, 1)
         XCTAssertFalse(alreadyCommitted)
 
-        let observedStages = await observer.events.map(\.stage)
+        let observedStages = observer.events.map(\.stage)
         XCTAssertEqual(
             observedStages,
             [
