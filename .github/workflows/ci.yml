@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   verify:
@@ -36,14 +36,54 @@ jobs:
           swift --version
           xcrun simctl list runtimes
 
-      - name: Validate project metadata
+      - name: Validate project metadata, scripts, and contract assets
         run: |
+          set -euo pipefail
           plutil -lint PocketFinancer.xcodeproj/project.pbxproj
           plutil -lint PocketFinancer/Resources/PrivacyInfo.xcprivacy
           xmllint --noout PocketFinancer.xcodeproj/xcshareddata/xcschemes/PocketFinancer.xcscheme
+          jq empty .swift-format
           jq empty .github/rulesets/main.json
           jq empty release-please-config.json
           jq empty .release-please-manifest.json
+          jq empty PocketFinancerTests/Fixtures/prefilter-vectors.json
+          find PocketFinancer/Resources/SmsProcessing -name '*.json' -print0 | xargs -0 -n 1 jq empty
+          sh -n scripts/format.sh scripts/build.sh scripts/test.sh
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          root = pathlib.Path("PocketFinancer/Resources/SmsProcessing")
+          manifest = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))
+          artifacts = {item["path"]: item["sha256"] for item in manifest["artifacts"]}
+          checked = 0
+          for path in sorted(root.rglob("*")):
+              if not path.is_file() or path.name == "release-manifest.json":
+                  continue
+              rel = path.relative_to(root).as_posix()
+              expected = artifacts.get(rel)
+              if expected is None:
+                  sys.exit(f"Unlisted bundled SMS asset: {rel}")
+              actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+              if actual != expected:
+                  sys.exit(f"SHA-256 mismatch for {rel}: {actual} != {expected}")
+              checked += 1
+          if checked != 17:
+              sys.exit(f"Expected 17 bundled iOS SMS assets, found {checked}")
+          print(f"Verified {checked} bundled SMS contract assets against release-manifest.json.")
+          PY
+
+      - name: Validate release workflow dispatch and ruleset checks
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/release.yml
+          grep -Eq 'gh[[:space:]]+workflow[[:space:]]+run[[:space:]]+ci\.yml[[:space:]]+--repo[[:space:]]+"\$GITHUB_REPOSITORY"[[:space:]]+--ref[[:space:]]+"\$head_branch"' "$workflow"
+          grep -Eq 'gh[[:space:]]+workflow[[:space:]]+run[[:space:]]+pr-title\.yml[[:space:]]+--repo[[:space:]]+"\$GITHUB_REPOSITORY"[[:space:]]+--ref[[:space:]]+"\$head_branch"' "$workflow"
+          grep -Fq 'name: Format, build, and test' .github/workflows/ci.yml
+          grep -Fq 'name: Conventional Commit title' .github/workflows/pr-title.yml
 
       - name: Enforce local-only runtime
         run: |
@@ -55,7 +95,7 @@ jobs:
             echo "Unexpected cloud or network API in the app target." >&2
             exit 1
           fi
-          if git ls-files | rg -qi '(^|/)(sms\.db|extraction_ds\.jsonl|.*\.mobileprovision|.*\.p12|.*\.cer)$'; then
+          if git ls-files | rg -qi '(^|/)(sms\.db|all_sms\.json|extraction_ds\.jsonl|Signing\.local\.xcconfig|.*\.mobileprovision|.*\.p12|.*\.p8|.*\.cer|.*\.keystore|.*\.jks)$'; then
             echo "Unexpected raw-message corpus or signing material in the repository." >&2
             exit 1
           fi
@@ -80,12 +120,15 @@ jobs:
         if: always()
         run: |
           if [ -d "${{ runner.temp }}/PocketFinancer.xcresult" ]; then
-            xcrun xccov view --report --json "${{ runner.temp }}/PocketFinancer.xcresult" > "${{ runner.temp }}/coverage.json"
+            if ! xcrun xccov view --report --json "${{ runner.temp }}/PocketFinancer.xcresult" > "${{ runner.temp }}/coverage.json"; then
+              rm -f "${{ runner.temp }}/coverage.json"
+              echo "Coverage report not available in xcresult."
+            fi
           fi
 
       - name: Upload test result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pocket-financer-test-result
           path: |

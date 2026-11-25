@@ -1,22 +1,31 @@
-# Physical-device validation
+# Physical-Device Validation
 
-Run these checks on a signed Apple Intelligence-capable iPhone before treating automatic Shortcuts ingestion as production-ready. Never record or share real message text, senders, prompts, or extracted values outside the device screen.
+Run this checklist on a signed, Apple Intelligence-capable iPhone before treating automatic Shortcuts ingestion or on-device extraction as release-ready. Never record, screenshot, or share real message bodies, senders, prompts, or extracted values outside the device.
 
-## Stable iOS 26 path
+## Prerequisites
 
-1. Install and launch Pocket Financer once; complete onboarding and confirm your primary currency.
-2. Open **Settings -> Run Synthetic Model Test**. Confirm the diagnostic passes, shows `pocketfinancer.sms-extractor-input/1` and `DIRECT_NON_THINKING`, routes safely to Review, and leaves **Transactions** empty. Simulator builds cannot prove on-device generation quality.
-3. In Shortcuts, create a personal Message automation with `Message Contains debited` for initial proof (no Sender condition), passing `Shortcut Input -> Content` to `Import Transaction Alert`. Choose **Run Immediately**.
-4. Send a synthetic debit alert:
-   - First time with an unrecognized masked suffix/VPA: confirm it opens `Review`, and confirming in `Review` creates both the `Transaction` and the confirmed `Account` / `SmsAccountAlias`.
-   - Second time for the same linked account: confirm a valid `posted` alert outside the 5-minute duplicate window automatically saves directly into **Transactions** without creating an `SmsReviewCase`.
-   - Within 5 minutes (`<= 300` seconds) for the same account, direction, amount, and currency: confirm the alert is retained in `Review` with `duplicate_possible`.
-5. Send a synthetic OTP or non-financial message: confirm `SmsPrefilter` (`tombstoned_excluded`) or extractor `none` (`tombstoned_none`) discards it with an empty body and no transaction.
-6. Replace the `debited` automation with separate sender-free automations for `Rs`, `INR`, and `₹`.
-7. Test retryable failure recovery (Apple Intelligence off / force-quit during queue processing) and open **What Happened** (`AlertProcessingDetailView`) to inspect trace stages and store records.
+- Physical Apple Intelligence-capable iPhone running iOS 26+.
+- iPhone and Siri languages aligned to supported English (`en-US` model check); iPhone Region may remain India.
+- Local signing configured in ignored `Config/Signing.local.xcconfig` (`DEVELOPMENT_TEAM` and `PRODUCT_BUNDLE_IDENTIFIER`).
 
-## Store-recovery validation
+## Pipeline and Shortcuts matrix
 
-Launch an isolated Debug build with `--ui-testing-store-unavailable` and verify **Local store unavailable** blocks UI and Shortcut imports without deleting or replacing existing store files. Remove the launch argument and relaunch to confirm clean recovery.
+1. **First run & currency:** Install and launch Pocket Financer once, complete onboarding, and confirm your primary currency.
+2. **Synthetic model self-test:** Open **Settings → Run Synthetic Model Test**. Confirm it passes, reports `pocketfinancer.sms-extractor-input/1` and `DIRECT_NON_THINKING`, routes safely to Review, and leaves **Transactions** empty. (Simulator builds cannot verify Apple Foundation Models generation quality.)
+3. **Initial Shortcuts proof:** Follow [shortcuts-setup.md](shortcuts-setup.md) to create a sender-free Message automation (`Message Contains → debited`, **Run Immediately**, passing `Shortcut Input → Content` to `Import Transaction Alert`).
+4. **End-to-end transaction routing (synthetic alerts from another phone):**
+   - **Unlinked account (first time):** Confirm the alert opens **Review** (`account_resolution_unresolved`), and confirming in **Review** atomically creates the `Transaction`, `Account`, and confirmed `SmsAccountAlias`.
+   - **Linked account (outside 5 minutes):** Send a second valid `posted` alert for the same account more than 300 seconds later; confirm it auto-saves directly into **Transactions** without creating an `SmsReviewCase`.
+   - **5-minute duplicate (`<= 300` seconds):** Send an identical-amount/direction alert for the same linked account within 300 seconds; confirm it routes to **Review** (`duplicate_possible`) instead of auto-saving.
+5. **Tombstone privacy checks:**
+   - Send a synthetic OTP or collect-request alert; confirm `SmsPrefilter` discards it as `tombstoned_excluded` with an empty body and no transaction.
+   - Send a synthetic non-transaction balance/statement alert; confirm `FoundationSmsExtractor` `none` discards it as `tombstoned_none` with an empty body and redacted analysis/request JSON.
+6. **Production-like triggers:** Replace the `debited` automation with separate sender-free automations for `Rs`, `INR`, and `₹`, and verify overlapping matches within 15 seconds coalesce cleanly.
+7. **Locked-device & failure recovery:**
+   - Lock the iPhone (after first unlock since reboot) and send a synthetic alert; confirm Shortcuts saves it without unlocking, and opening Pocket Financer processes the queued item.
+   - Disable Apple Intelligence (or force-quit mid-drain), send a synthetic alert, re-enable Apple Intelligence, and open **What Happened** (`AlertProcessingDetailView`) to inspect `DecisionTraceTimeline`, stored attempt metadata, and retry behavior.
 
-Separately verify `PocketFinancerSchemaMigrationTests` and `PocketFinancerV5MigrationTests` pass in Xcode CI so existing stores migrate forward safely.
+## Store-recovery and migration checks
+
+1. Launch a Debug build with `--ui-testing-store-unavailable` and verify **Local store unavailable** blocks UI and Shortcut imports without deleting or replacing existing store files. Remove the launch argument and relaunch to confirm clean recovery.
+2. Verify `SchemaMigrationTests` passes in Xcode / GitHub Actions CI so consecutive `PocketFinancerSchemaV1`..`V7` stores migrate forward without data loss.

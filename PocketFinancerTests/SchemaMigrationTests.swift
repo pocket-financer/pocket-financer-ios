@@ -1,9 +1,10 @@
+import Foundation
 import SwiftData
 import XCTest
 
 @testable import PocketFinancer
 
-final class PocketFinancerSchemaMigrationTests: XCTestCase {
+final class SchemaMigrationTests: XCTestCase {
     /// Production retains its shared container for the app process lifetime. Mirror that
     /// lifetime here because SwiftData can still be delivering a post-migration Core Data
     /// notification when `ModelContainer` returns. Releasing the migrated container inside
@@ -13,13 +14,7 @@ final class PocketFinancerSchemaMigrationTests: XCTestCase {
 
     @MainActor
     func testLightweightMigrationFromV1PreservesExistingModelsAndAddsExtractionRuns() throws {
-        let directoryURL = FileManager.default.temporaryDirectory.appending(
-            path: "PocketFinancerMigration-\(UUID().uuidString)",
-            directoryHint: .isDirectory
-        )
-        let storeURL = directoryURL.appending(path: "PocketFinancer.store")
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-
+        let (directoryURL, storeURL) = try makeTemporaryStoreURL(label: "V1")
         var alertID: UUID?
         try autoreleasepool {
             let schema = Schema(versionedSchema: PocketFinancerSchemaV1.self)
@@ -60,18 +55,13 @@ final class PocketFinancerSchemaMigrationTests: XCTestCase {
             XCTAssertTrue(try context.fetch(FetchDescriptor<ExtractionRun>()).isEmpty)
             XCTAssertTrue(try context.fetch(FetchDescriptor<StructuredGenerationSnapshot>()).isEmpty)
             XCTAssertTrue(try context.fetch(FetchDescriptor<DeterministicFilterRun>()).isEmpty)
+            XCTAssertTrue(try context.fetch(FetchDescriptor<SmsContractReleaseState>()).isEmpty)
         }
     }
 
     @MainActor
     func testLightweightMigrationFromV2PreservesExtractionRunsAndAddsStructuredSnapshots() throws {
-        let directoryURL = FileManager.default.temporaryDirectory.appending(
-            path: "PocketFinancerMigration-\(UUID().uuidString)",
-            directoryHint: .isDirectory
-        )
-        let storeURL = directoryURL.appending(path: "PocketFinancer.store")
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-
+        let (directoryURL, storeURL) = try makeTemporaryStoreURL(label: "V2")
         var alertID: UUID?
         var extractionRunID: UUID?
         try autoreleasepool {
@@ -134,13 +124,7 @@ final class PocketFinancerSchemaMigrationTests: XCTestCase {
 
     @MainActor
     func testLightweightMigrationFromV3PreservesStructuredSnapshotsAndAddsFilterRuns() throws {
-        let directoryURL = FileManager.default.temporaryDirectory.appending(
-            path: "PocketFinancerMigration-\(UUID().uuidString)",
-            directoryHint: .isDirectory
-        )
-        let storeURL = directoryURL.appending(path: "PocketFinancer.store")
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-
+        let (directoryURL, storeURL) = try makeTemporaryStoreURL(label: "V3")
         var alertID: UUID?
         var extractionRunID: UUID?
         var snapshotID: UUID?
@@ -210,15 +194,121 @@ final class PocketFinancerSchemaMigrationTests: XCTestCase {
     }
 
     @MainActor
-    func testV6ToV7PreservesDurableAttemptAndRecoversExpiredOperation() async throws {
-        let directoryURL = FileManager.default.temporaryDirectory.appending(
-            path: "PocketFinancerMigration-\(UUID().uuidString)",
-            directoryHint: .isDirectory
+    func testLightweightMigrationFromV4PreservesLedgerAndCreatesHonestLegacyHistory() async throws {
+        let (directoryURL, storeURL) = try makeTemporaryStoreURL(label: "V4")
+        let alertID = UUID()
+        let transactionID = UUID()
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: PocketFinancerSchemaV4.self)
+            let configuration = ModelConfiguration(
+                "PocketFinancerV4MigrationTest",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: configuration)
+            let context = container.mainContext
+            context.insert(
+                InboxAlert(
+                    id: alertID,
+                    sourceIdentity: "v4-synthetic-source",
+                    contentDigest: "v4-synthetic-digest",
+                    origin: .manual,
+                    sourceApplication: "Messages",
+                    sender: "SYNTH",
+                    rawBody: TestFixtures.validBody,
+                    receivedAt: TestFixtures.receivedAt
+                )
+            )
+            context.insert(
+                Transaction(
+                    id: transactionID,
+                    amountMinorUnits: 50_000,
+                    currencyCode: "INR",
+                    merchant: "SYNTH STORE",
+                    occurredAt: TestFixtures.receivedAt,
+                    direction: .debit,
+                    accountID: nil,
+                    accountLabel: nil,
+                    isEdited: true,
+                    parserName: "V4 parser",
+                    reviewState: .confirmed,
+                    sourceAlertID: alertID,
+                    amountEvidenceText: "INR 500",
+                    dateEvidenceText: nil
+                )
+            )
+            try context.save()
+        }
+
+        let database = try AppDatabase(storeURL: storeURL)
+        Self.retainedMigratedStores.append((database, directoryURL))
+        try await database.prepareForProcessing()
+        let context = ModelContext(database.container)
+        let transactions = try context.fetch(FetchDescriptor<Transaction>())
+        let snapshots = try context.fetch(FetchDescriptor<SmsLegacyTransactionSnapshot>())
+        let revisions = try context.fetch(FetchDescriptor<SmsTransactionRevision>())
+
+        XCTAssertEqual(transactions.map(\.id), [transactionID])
+        XCTAssertEqual(transactions.first?.amountMinorUnits, 50_000)
+        XCTAssertEqual(snapshots.first?.transactionID, transactionID)
+        XCTAssertFalse(snapshots.first?.originalEditHistoryKnown ?? true)
+        XCTAssertEqual(revisions.first?.provenanceRawValue, "legacy_current_state_original_history_unknown")
+    }
+
+    @MainActor
+    func testLightweightMigrationFromV5PreservesFeedbackWithOptionalReferences() throws {
+        let (directoryURL, storeURL) = try makeTemporaryStoreURL(label: "V5")
+        let actionID = UUID()
+        let reviewCaseID = UUID()
+        let operationID = UUID()
+        try autoreleasepool {
+            let schema = Schema(versionedSchema: PocketFinancerSchemaV5.self)
+            let configuration = ModelConfiguration(
+                "PocketFinancerV5MigrationTest",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: configuration)
+            let context = container.mainContext
+            context.insert(
+                PocketFinancerSchemaV5.SmsUserFeedbackEvent(
+                    actionID: actionID,
+                    reviewCaseID: reviewCaseID,
+                    operationID: operationID,
+                    transactionRevisionID: nil,
+                    expectedReviewRevision: 0,
+                    resultingReviewRevision: 1,
+                    action: "rejected",
+                    actorClass: "user",
+                    correctionsJSON: "[]",
+                    retryConfiguration: nil,
+                    previousEventHash: nil,
+                    eventHash: "synthetic-v5-event-hash",
+                    createdAt: TestFixtures.receivedAt
+                )
+            )
+            try context.save()
+        }
+
+        let database = try AppDatabase(storeURL: storeURL)
+        Self.retainedMigratedStores.append((database, directoryURL))
+        let feedback = try database.container.mainContext.fetch(
+            FetchDescriptor<SmsUserFeedbackEvent>()
         )
-        let storeURL = directoryURL.appending(path: "PocketFinancer.store")
-        try FileManager.default.createDirectory(
-            at: directoryURL, withIntermediateDirectories: true
-        )
+
+        XCTAssertEqual(feedback.first?.actionID, actionID)
+        XCTAssertEqual(feedback.first?.reviewCaseID, reviewCaseID)
+        XCTAssertEqual(feedback.first?.operationID, operationID)
+        XCTAssertNil(feedback.first?.transactionID)
+    }
+
+    @MainActor
+    func testLightweightMigrationFromV6PreservesDurableAttemptRecoversExpiredAndSupportsV7ReleaseState() async throws {
+        let (directoryURL, storeURL) = try makeTemporaryStoreURL(label: "V6")
         let operationID = UUID()
         let alertID = UUID()
         try autoreleasepool {
@@ -276,20 +366,43 @@ final class PocketFinancerSchemaMigrationTests: XCTestCase {
             now: TestFixtures.receivedAt
         )
         XCTAssertEqual(recovered.count, 1)
+
         let context = migratedDatabase.container.mainContext
         let targetOperationID = operationID
         let operations = try context.fetch(
             FetchDescriptor<SmsProcessingOperation>(
                 predicate: #Predicate { $0.id == targetOperationID }
-            ))
+            )
+        )
         XCTAssertEqual(operations.first?.state, .retainedReview)
         let attempts = try context.fetch(
             FetchDescriptor<SmsSelectorAttempt>(
                 predicate: #Predicate { $0.operationID == targetOperationID }
-            ))
+            )
+        )
         XCTAssertEqual(attempts.first?.completionRawValue, "interrupted")
         let reviews = try context.fetch(FetchDescriptor<SmsReviewCase>())
         XCTAssertEqual(reviews.first?.currentOperationID, operationID)
         XCTAssertEqual(reviews.first?.reasonCodesRawValue, "operation_interrupted")
+
+        context.insert(
+            SmsContractReleaseState(
+                releaseID: SmsContractAssets.releaseID,
+                activatedAt: TestFixtures.receivedAt
+            )
+        )
+        try context.save()
+        let releaseStates = try context.fetch(FetchDescriptor<SmsContractReleaseState>())
+        XCTAssertEqual(releaseStates.map(\.releaseID), [SmsContractAssets.releaseID])
+    }
+
+    private func makeTemporaryStoreURL(label: String) throws -> (URL, URL) {
+        let directoryURL = FileManager.default.temporaryDirectory.appending(
+            path: "PocketFinancerMigration-\(label)-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        let storeURL = directoryURL.appending(path: "PocketFinancer.store")
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        return (directoryURL, storeURL)
     }
 }

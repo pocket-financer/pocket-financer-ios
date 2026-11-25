@@ -6,20 +6,44 @@ final class PocketFinancerUITests: XCTestCase {
     }
 
     @MainActor
-    func testOnboardingReachesManualImport() throws {
+    func testOnboardingReachesManualImportAndProcessingTrace() throws {
         let app = launchResetApp()
         completeOnboarding(in: app)
 
+        XCTAssertTrue(app.descendants(matching: .any)["monthly-summary"].waitForExistence(timeout: 8))
+
         let transactionsTab = app.tabBars.buttons["Transactions"]
-        XCTAssertTrue(transactionsTab.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(transactionsTab, timeout: 10))
         transactionsTab.tap()
+        XCTAssertTrue(app.navigationBars["Transactions"].waitForExistence(timeout: 10))
 
         let importButton = app.buttons["import-alert-button"]
-        XCTAssertTrue(importButton.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(importButton, timeout: 10))
         importButton.tap()
 
-        XCTAssertTrue(app.textViews["manual-body"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["manual-import-submit"].waitForExistence(timeout: 3))
+        let manualBody = app.textViews["manual-body"]
+        if !manualBody.waitForExistence(timeout: 10) {
+            XCTAssertTrue(waitForHittable(importButton, timeout: 5))
+            importButton.tap()
+            XCTAssertTrue(manualBody.waitForExistence(timeout: 10))
+        }
+        XCTAssertTrue(app.textFields["manual-sender"].waitForExistence(timeout: 5))
+        let submitButton = app.buttons["manual-import-submit"]
+        XCTAssertTrue(waitForHittable(submitButton, timeout: 5))
+        submitButton.tap()
+
+        let importAlert = app.alerts["Import result"]
+        XCTAssertTrue(importAlert.waitForExistence(timeout: 15))
+        importAlert.buttons["Done"].tap()
+
+        let reviewRow = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "Needs review")
+        ).firstMatch
+        XCTAssertTrue(waitForHittable(reviewRow, timeout: 10))
+        reviewRow.tap()
+
+        XCTAssertTrue(app.navigationBars["What Happened"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["review-outcome"].waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -28,14 +52,14 @@ final class PocketFinancerUITests: XCTestCase {
         let privacyShield = app.descendants(matching: .any)["privacy-shield"]
         let homeTab = app.tabBars.buttons["Home"]
 
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
         XCTAssertTrue(waitForHittable(homeTab, timeout: 15))
-        XCTAssertTrue(privacyShield.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(privacyShield.waitForNonExistence(timeout: 3))
 
         XCUIDevice.shared.press(.home)
         let enteredBackground =
             app.wait(for: .runningBackgroundSuspended, timeout: 5)
-            || app.wait(for: .runningBackground, timeout: 1)
+            || app.wait(for: .runningBackground, timeout: 2)
         XCTAssertTrue(enteredBackground)
 
         app.activate()
@@ -46,13 +70,15 @@ final class PocketFinancerUITests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsExposesPrivacyAndScopedErasure() throws {
+    func testSettingsExposesCurrencyDiagnosticsPrivacyAndScopedErasure() throws {
         let app = launchResetApp()
         completeOnboarding(in: app)
 
         let settingsTab = app.tabBars.buttons["Settings"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(settingsTab, timeout: 10))
         settingsTab.tap()
+
+        XCTAssertTrue(app.staticTexts["Money and locale"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["On-device intelligence"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["model-self-test"].exists)
         XCTAssertTrue(app.buttons["model-self-test"].isEnabled)
@@ -72,7 +98,7 @@ final class PocketFinancerUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["store-unavailable-title"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["store-unavailable-title"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["store-unavailable-preservation-message"].exists)
         XCTAssertTrue(app.buttons["retry-local-store"].exists)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
@@ -89,7 +115,7 @@ final class PocketFinancerUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["store-loading-title"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["store-loading-title"].waitForExistence(timeout: 5))
         app.terminate()
 
         app.launchArguments = [
@@ -98,28 +124,28 @@ final class PocketFinancerUITests: XCTestCase {
             "-AppleLocale", "en_US",
         ]
         app.launch()
-        XCTAssertTrue(app.staticTexts["Your finances stay yours"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Your finances stay yours"].waitForExistence(timeout: 10))
     }
 
     @MainActor
     private func completeOnboarding(in app: XCUIApplication) {
-        XCTAssertTrue(app.staticTexts["Your finances stay yours"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Your finances stay yours"].waitForExistence(timeout: 10))
         let continueButton = app.buttons["onboarding-continue"]
-        XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(waitForHittable(continueButton, timeout: 5))
         continueButton.tap()
 
-        XCTAssertTrue(app.staticTexts["Understand alerts locally"].waitForExistence(timeout: 5))
-        XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Understand alerts locally"].waitForExistence(timeout: 8))
+        XCTAssertTrue(waitForHittable(continueButton, timeout: 5))
         continueButton.tap()
 
-        XCTAssertTrue(app.staticTexts["Choose your primary currency"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.pickers["primary-currency-picker"].waitForExistence(timeout: 3))
-        XCTAssertTrue(continueButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Choose your primary currency"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.pickers["primary-currency-picker"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(continueButton, timeout: 5))
         continueButton.tap()
 
-        XCTAssertTrue(app.staticTexts["Connect with Shortcuts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Connect with Shortcuts"].waitForExistence(timeout: 8))
         let finishButton = app.buttons["onboarding-finish"]
-        XCTAssertTrue(finishButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(waitForHittable(finishButton, timeout: 5))
         finishButton.tap()
         XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
     }

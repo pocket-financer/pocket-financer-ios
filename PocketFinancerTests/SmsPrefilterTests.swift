@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import PocketFinancer
@@ -8,6 +9,7 @@ final class SmsPrefilterTests: XCTestCase {
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
         )
+        XCTAssertEqual(SmsPrefilter.policyID, "sms-prefilter/1")
         let vectors = try XCTUnwrap(root["vectors"] as? [[String: Any]])
         XCTAssertEqual(vectors.count, 54)
 
@@ -21,6 +23,38 @@ final class SmsPrefilterTests: XCTestCase {
             XCTAssertEqual(result.decision.rawValue, expectedDecision, id)
             XCTAssertEqual(result.reason.rawValue, expectedReason, id)
         }
+    }
+
+    func testGuardsExcludeConditionalRequestsAndPreserveCompletedTransactions() {
+        let empty = SmsPrefilter.evaluate("   \n\t  ")
+        XCTAssertEqual(empty, SmsPrefilter.Result(decision: .exclude, reason: .empty))
+
+        let noDigits = SmsPrefilter.evaluate("Thank you for banking with Demo Bank.")
+        XCTAssertEqual(noDigits, SmsPrefilter.Result(decision: .exclude, reason: .noDigits))
+
+        let conditionalCollect = SmsPrefilter.evaluate(
+            "Demo Merchant has requested Rs.500.00. Once approved, money will be debited."
+        )
+        XCTAssertEqual(
+            conditionalCollect,
+            SmsPrefilter.Result(decision: .exclude, reason: .collectOrMandateRequest)
+        )
+
+        let withoutOtpDebit = SmsPrefilter.evaluate(
+            "Txn Rs.450.00 on Card XX1234 without OTP at Demo Coffee."
+        )
+        XCTAssertEqual(
+            withoutOtpDebit,
+            SmsPrefilter.Result(decision: .pass, reason: .eligible)
+        )
+
+        let standaloneOtp = SmsPrefilter.evaluate(
+            "Your OTP for card transaction is 482910. Do not share."
+        )
+        XCTAssertEqual(
+            standaloneOtp,
+            SmsPrefilter.Result(decision: .exclude, reason: .otpVerification)
+        )
     }
 
     private func locateVectorsURL() throws -> URL {
@@ -37,6 +71,12 @@ final class SmsPrefilterTests: XCTestCase {
                 return url
             }
         }
-        throw XCTSkip("prefilter-vectors.json was not copied into test bundle resources")
+        throw NSError(
+            domain: "SmsPrefilterTests",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "prefilter-vectors.json is missing from test bundle resources"
+            ]
+        )
     }
 }

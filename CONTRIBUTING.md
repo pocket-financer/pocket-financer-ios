@@ -1,15 +1,26 @@
-# Contributing to Pocket Financer
+# Contributing to Pocket Financer (iOS)
 
-Pocket Financer handles unusually sensitive local data. Start with the invariants in `AGENTS.md` and keep every change auditable. `main` is a protected, releasable development branch; implementation belongs on a short-lived branch and pull request.
+Pocket Financer handles sensitive local financial data. Read [AGENTS.md](AGENTS.md) first and keep every change focused, privacy-safe, and auditable. `main` is a protected, releasable branch; all work lands through short-lived branches and pull requests.
 
-1. Update from `origin/main` and create `codex/<type>-<short-description>`, such as `codex/feat-model-transparency` or `codex/fix-duplicate-import`.
-2. Run `scripts/format.sh --lint`, an unsigned Release build with `scripts/build.sh`, and `scripts/test.sh`.
-3. Push the branch and open a pull request targeting `main`. Use a Conventional Commit title because the squash title becomes the commit on `main`.
-4. For ingestion or persistence changes, describe crash recovery, duplicate handling, raw-evidence retention, and model-unavailable behavior.
-5. For UI changes, verify Dynamic Type, VoiceOver labels, dark mode, and Reduce Motion on at least one iPhone simulator.
+## Workflow
 
-Never include a real transaction alert in a bug report. Replace names, identifiers, references, and amounts with synthetic data.
+1. Branch from up-to-date `origin/main` using `<type>/<short-description>` (for example `feat/review-span-editing`, `fix/duplicate-window`, or `docs/shortcuts-clarity`).
+2. Keep changes scoped and add or update synthetic unit and UI tests (`PocketFinancerTests` / `PocketFinancerUITests`).
+3. Verify locally on macOS (or confirm all checks pass on the pull request CI run):
+   - `scripts/format.sh --lint`
+   - `CONFIGURATION=Release scripts/build.sh`
+   - `scripts/test.sh`
+   - If you touched synced contract assets, run `python ../pocket-financer-intelligence/scripts/sync_native_assets.py --check --target ios`.
+4. Open a pull request targeting `main` with a Conventional Commit title (`feat:`, `fix:`, `perf:`, `refactor:`, `revert:`, `test:`, `docs:`, `build:`, `ci:`, `chore:`), because the squash-merge title becomes the commit on `main`.
+5. For ingestion or persistence changes, document duplicate handling, crash recovery, raw-evidence retention/tombstones, schema migration impact, and model-unavailable behavior in the PR description.
+6. For UI changes, verify Dynamic Type, VoiceOver labels, dark mode, and Reduce Motion on an iPhone simulator.
 
-Use squash merge and delete the short-lived branch after merge. Do not bypass required checks or directly push feature, fix, refactor, documentation, dependency, or CI commits to `main`.
+## Privacy & data hygiene
 
-Release Please owns routine version, changelog, tag, and draft-release changes. Merging a normal pull request does not authorize publication. See `docs/releasing.md`.
+Never include a real financial alert, phone number, account identifier, transaction screenshot, signing credential, or model transcript in code, tests, docs, issues, or pull requests. Replace every value with freshly invented synthetic data.
+
+## Merging & releases
+
+Use squash merge after required checks (`Format, build, and test` and `Conventional Commit title`) pass and review conversations are resolved, then delete the branch. Never push directly to `main`.
+
+Release Please owns routine version bumps, `CHANGELOG.md`, tags, and draft releases. Do not manually edit version or changelog files in normal PRs. See [docs/releasing.md](docs/releasing.md).
