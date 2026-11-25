@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import XCTest
 
@@ -14,26 +15,11 @@ final class SmsProcessingStoreTests: XCTestCase {
     func testOperationClaimTraceReviewAndFeedbackAreDurableAndIdempotent() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
-        let alert = InboxAlert(
-            sourceIdentity: "synthetic-source",
-            contentDigest: "synthetic-digest",
-            origin: .manual,
-            sourceApplication: "Messages",
-            sender: "SYNTH",
-            rawBody: "INR 10 was paid from account **1234.",
-            receivedAt: TestFixtures.receivedAt
-        )
+        let alert = TestFixtures.makeAlert(body: "INR 10 was paid from account **1234.")
         context.insert(alert)
         try context.save()
 
-        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
-            sourceAlertID: alert.id,
-            trigger: "manual",
-            primaryCurrency: "INR",
-            enabledProfiles: ["core-en", "india"],
-            extractorEligibilityOverride: true,
-            now: TestFixtures.receivedAt
-        )
+        let snapshot = try TestFixtures.makeSnapshot(context: context, alert: alert, trigger: "manual")
         XCTAssertEqual(snapshot.configuration.persistencePolicy.rolloutMode, "automatic")
         XCTAssertEqual(snapshot.configuration.extractor.generationMode, "DIRECT_NON_THINKING")
 
@@ -54,12 +40,11 @@ final class SmsProcessingStoreTests: XCTestCase {
 
         let reviewID = try await store.retainForReview(
             claim,
-            reasons: ["persistence_blocked_by_rollout_mode"],
+            reasons: ["account_resolution_unresolved"],
             now: TestFixtures.receivedAt
         )
-        let actionID = UUID()
         let command = ReviewCommand(
-            actionID: actionID,
+            actionID: UUID(),
             reviewCaseID: reviewID,
             expectedRevision: 0,
             kind: .saveDraft,
@@ -72,64 +57,42 @@ final class SmsProcessingStoreTests: XCTestCase {
         XCTAssertFalse(first.replayed)
         XCTAssertTrue(replay.replayed)
 
-        let verificationContext = ModelContext(database.container)
-        let operations = try verificationContext.fetch(FetchDescriptor<SmsProcessingOperation>())
-        let reviews = try verificationContext.fetch(FetchDescriptor<SmsReviewCase>())
-        let feedback = try verificationContext.fetch(FetchDescriptor<SmsUserFeedbackEvent>())
-        XCTAssertEqual(operations.first?.state, .retainedReview)
-        XCTAssertEqual(reviews.first?.state, .draft)
-        XCTAssertEqual(feedback.count, 1)
+        let verification = ModelContext(database.container)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SmsProcessingOperation>()).first?.state,
+            .retainedReview
+        )
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SmsReviewCase>()).first?.state,
+            .draft
+        )
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsUserFeedbackEvent>()).count, 1)
     }
 
     @MainActor
     func testExpiredOperationIsFencedAndRecoveredIntoReviewWithTrace() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
-        let alert = InboxAlert(
-            sourceIdentity: "recovery-source",
-            contentDigest: "recovery-digest",
-            origin: .manual,
-            sourceApplication: "Tests",
-            sender: "SYNTH",
-            rawBody: "INR 10 was debited from account **1234.",
-            receivedAt: TestFixtures.receivedAt
-        )
+        let alert = TestFixtures.makeAlert(body: "INR 10 was debited from account **1234.")
         context.insert(alert)
         try context.save()
-        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
-            sourceAlertID: alert.id,
-            trigger: "manual",
-            primaryCurrency: "INR",
-            enabledProfiles: ["core-en", "india"],
-            extractorEligibilityOverride: true,
-            now: TestFixtures.receivedAt
-        )
+        let snapshot = try TestFixtures.makeSnapshot(context: context, alert: alert, trigger: "manual")
         let store = SmsProcessingStore(modelContainer: database.container)
         let abandonedClaim = try await store.claim(
             operationID: snapshot.operationID,
             now: TestFixtures.receivedAt
         )
 
-        let recovered = try await store.recoverExpiredOperations(
-            now: TestFixtures.receivedAt.addingTimeInterval(
-                SmsProcessingStore.claimLease + 1
-            )
-        )
-
+        let expiredNow = TestFixtures.receivedAt.addingTimeInterval(SmsProcessingStore.claimLease + 1)
+        let recovered = try await store.recoverExpiredOperations(now: expiredNow)
         XCTAssertEqual(recovered.count, 1)
-        await xctAssertThrowsErrorAsync {
-            try await store.transition(
-                abandonedClaim,
-                expected: .claimed,
-                to: .analyzed,
-                now: TestFixtures.receivedAt.addingTimeInterval(
-                    SmsProcessingStore.claimLease + 1
-                )
-            )
+
+        await TestFixtures.assertThrowsErrorAsync {
+            try await store.transition(abandonedClaim, expected: .claimed, to: .analyzed, now: expiredNow)
         } verify: { error in
             XCTAssertEqual(error as? SmsProcessingStoreError, .lostOwnership)
         }
-        await xctAssertThrowsErrorAsync {
+        await TestFixtures.assertThrowsErrorAsync {
             try await store.recordGateDecision(
                 PersistenceGateDecision(
                     result: .reviewRequired,
@@ -138,23 +101,20 @@ final class SmsProcessingStoreTests: XCTestCase {
                 ),
                 accountResolution: .missing,
                 claim: abandonedClaim,
-                rolloutMode: "shadow",
-                now: TestFixtures.receivedAt.addingTimeInterval(
-                    SmsProcessingStore.claimLease + 1
-                )
+                rolloutMode: "automatic",
+                now: expiredNow
             )
         } verify: { error in
             XCTAssertEqual(error as? SmsProcessingStoreError, .lostOwnership)
         }
+
         let verification = ModelContext(database.container)
         let operation = try XCTUnwrap(
             verification.fetch(FetchDescriptor<SmsProcessingOperation>()).first
         )
         XCTAssertEqual(operation.state, .retainedReview)
         XCTAssertNotNil(operation.settledAt)
-        let review = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<SmsReviewCase>()).first
-        )
+        let review = try XCTUnwrap(verification.fetch(FetchDescriptor<SmsReviewCase>()).first)
         XCTAssertEqual(review.id, recovered.first)
         XCTAssertTrue(review.reasonCodesRawValue.contains("operation_interrupted"))
         let trace = try XCTUnwrap(
@@ -168,15 +128,7 @@ final class SmsProcessingStoreTests: XCTestCase {
     func testRetrySnapshotReusesStableEventIdentity() throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
-        let alert = InboxAlert(
-            sourceIdentity: "retry-source",
-            contentDigest: "retry-digest",
-            origin: .manual,
-            sourceApplication: "Tests",
-            sender: "SYNTH",
-            rawBody: "INR 10 was debited from account **1234.",
-            receivedAt: TestFixtures.receivedAt
-        )
+        let alert = TestFixtures.makeAlert(body: "INR 10 was debited from account **1234.")
         context.insert(alert)
         try context.save()
         let factory = SmsOperationSnapshotFactory(context: context)
@@ -188,11 +140,9 @@ final class SmsProcessingStoreTests: XCTestCase {
             extractorEligibilityOverride: true,
             now: TestFixtures.receivedAt
         )
-        let originalOperationID = original.operationID
-        let originalStableEventID = original.stableEventID
         let retry = try factory.create(
             sourceAlertID: alert.id,
-            parentOperationID: originalOperationID,
+            parentOperationID: original.operationID,
             trigger: "retry",
             primaryCurrency: "INR",
             enabledProfiles: ["core-en", "india"],
@@ -200,8 +150,8 @@ final class SmsProcessingStoreTests: XCTestCase {
             now: TestFixtures.receivedAt.addingTimeInterval(1)
         )
 
-        XCTAssertNotEqual(originalOperationID, retry.operationID)
-        XCTAssertEqual(originalStableEventID, retry.stableEventID)
+        XCTAssertNotEqual(original.operationID, retry.operationID)
+        XCTAssertEqual(original.stableEventID, retry.stableEventID)
         Self.retainedSynchronousStores.append(database)
     }
 
@@ -209,7 +159,6 @@ final class SmsProcessingStoreTests: XCTestCase {
     func testLegacyBackfillIsIdempotentAndPreservesExactStoredValues() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
-        let alertID = UUID()
         let transaction = Transaction(
             amountMinorUnits: 99,
             currencyCode: "JPY",
@@ -221,7 +170,7 @@ final class SmsProcessingStoreTests: XCTestCase {
             isEdited: true,
             parserName: "Legacy",
             reviewState: .needsReview,
-            sourceAlertID: alertID,
+            sourceAlertID: UUID(),
             amountEvidenceText: "JPY 99",
             dateEvidenceText: nil
         )
@@ -232,11 +181,9 @@ final class SmsProcessingStoreTests: XCTestCase {
         try await store.backfillLegacyTransactions(now: TestFixtures.receivedAt)
         try await store.backfillLegacyTransactions(now: TestFixtures.receivedAt)
 
-        let verificationContext = ModelContext(database.container)
-        let snapshots = try verificationContext.fetch(
-            FetchDescriptor<SmsLegacyTransactionSnapshot>()
-        )
-        let revisions = try verificationContext.fetch(FetchDescriptor<SmsTransactionRevision>())
+        let verification = ModelContext(database.container)
+        let snapshots = try verification.fetch(FetchDescriptor<SmsLegacyTransactionSnapshot>())
+        let revisions = try verification.fetch(FetchDescriptor<SmsTransactionRevision>())
         XCTAssertEqual(snapshots.count, 1)
         XCTAssertEqual(snapshots.first?.amountMinorUnits, 99)
         XCTAssertFalse(snapshots.first?.originalEditHistoryKnown ?? true)
@@ -245,19 +192,56 @@ final class SmsProcessingStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testCorrectionAtomicallyProjectsLedgerRevisionAndReplaysIdempotently() async throws {
+    func testGroundedReviewConfirmCreatesDeterministicAccountAndVpaAliasAtomically() async throws {
+        let database = try AppDatabase(inMemory: true)
+        let body = "INR 250.00 debited from user.name@synthbank at Demo Cafe."
+        let reviewID = try await seedGroundedReview(
+            database: database,
+            body: body,
+            amountText: "INR 250.00",
+            amountValue: "250.00",
+            directionText: "debited",
+            accountReference: "user.name@synthbank",
+            accountText: "user.name@synthbank",
+            counterpartyText: "Demo Cafe"
+        )
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let receipt = try await store.resolveReview(
+            ReviewCommand(
+                actionID: UUID(),
+                reviewCaseID: reviewID,
+                expectedRevision: 0,
+                kind: .confirm,
+                corrections: [],
+                retryConfiguration: nil
+            ),
+            now: TestFixtures.receivedAt
+        )
+        XCTAssertEqual(receipt.resultingRevision, 1)
+
+        let verification = ModelContext(database.container)
+        let account = try XCTUnwrap(verification.fetch(FetchDescriptor<Account>()).first)
+        XCTAssertEqual(account.name, "UPI account user.name@synthbank")
+        XCTAssertNil(account.suffix)
+        let alias = try XCTUnwrap(verification.fetch(FetchDescriptor<SmsAccountAlias>()).first)
+        XCTAssertEqual(alias.accountID, account.id)
+        XCTAssertEqual(alias.aliasKindRawValue, "vpa")
+        XCTAssertEqual(alias.normalizedAliasHash, CanonicalJSON.sha256("vpa:user.name@synthbank"))
+        XCTAssertTrue(alias.confirmedByUser)
+        let transaction = try XCTUnwrap(verification.fetch(FetchDescriptor<Transaction>()).first)
+        XCTAssertEqual(transaction.amountMinorUnits, 25_000)
+        XCTAssertEqual(transaction.accountID, account.id)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SmsTransactionRevision>()).first?.provenanceRawValue,
+            "user_confirmed_grounded_proposal"
+        )
+    }
+
+    @MainActor
+    func testGroundedReviewCorrectionAtomicallyProjectsLedgerRevisionAndReplaysIdempotently() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
         let rawBody = "INR 10 was debited from account **1234 at SYNTH SHOP or INR 12.50."
-        let alert = InboxAlert(
-            sourceIdentity: "synthetic-review-source",
-            contentDigest: CanonicalJSON.sha256(rawBody),
-            origin: .manual,
-            sourceApplication: "Tests",
-            sender: "SYNTH",
-            rawBody: rawBody,
-            receivedAt: TestFixtures.receivedAt
-        )
         let account = Account(
             name: "Synthetic account",
             bank: "Synthetic bank",
@@ -265,90 +249,17 @@ final class SmsProcessingStoreTests: XCTestCase {
             suffix: "1234",
             now: TestFixtures.receivedAt
         )
-        context.insert(alert)
         context.insert(account)
         try context.save()
-        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
-            sourceAlertID: alert.id,
-            trigger: "manual",
-            primaryCurrency: "INR",
-            enabledProfiles: ["core-en", "india"],
-            extractorEligibilityOverride: true,
-            now: TestFixtures.receivedAt
-        )
-        let analysis = try StructuralSmsAnalyzer().analyze(
-            source: alert.rawBody,
-            operation: snapshot
-        )
-        let initialOutput = try TestFixtures.strictPostedOutput(
-            for: rawBody,
+        let reviewID = try await seedGroundedReview(
+            database: database,
+            body: rawBody,
             amountText: "INR 10",
             amountValue: "10",
-            direction: "debit",
             directionText: "debited",
             accountReference: "**1234",
             accountText: "**1234",
             counterpartyText: "SYNTH SHOP"
-        )
-        let extraction = try SmsExtractorValidator().validate(
-            rawOutput: initialOutput,
-            source: rawBody,
-            primaryCurrency: "INR"
-        )
-        let extracted = try XCTUnwrap(extraction.transaction)
-        let fingerprint = CanonicalJSON.sha256(
-            "\(extracted.minorUnits)\0\(extracted.currency)\0"
-                + "\(extracted.direction.rawValue)\0\0\(snapshot.configuration.receivedTimestamp.epochMs)"
-        )
-        let resultJSON = try SmsProcessingJSON.result(
-            status: "review",
-            extraction: extraction,
-            operation: snapshot,
-            account: SmsProcessingJSON.account(.unresolved, reference: "1234"),
-            duplicate: SmsProcessingJSON.duplicate(status: "clear", operation: snapshot, fingerprint: fingerprint),
-            gate: SmsProcessingJSON.gate(
-                posted: true,
-                accountReason: "account_resolution_unresolved",
-                duplicateStatus: "clear",
-                rolloutMode: "automatic"
-            ),
-            reasons: ["account_resolution_unresolved"]
-        )
-        let store = SmsProcessingStore(modelContainer: database.container)
-        let claim = try await store.claim(
-            operationID: snapshot.operationID,
-            now: TestFixtures.receivedAt
-        )
-        try await store.recordAnalysis(
-            analysis,
-            operationID: snapshot.operationID,
-            now: TestFixtures.receivedAt
-        )
-        try await store.recordNormalizedResult(
-            operationID: snapshot.operationID,
-            semanticResultJSON: resultJSON,
-            decision: "posted"
-        )
-        try await store.recordGateDecision(
-            claim,
-            result: "review_required",
-            primaryReason: "account_resolution_unresolved",
-            checksJSON: try SmsProcessingJSON.checksJSON(
-                posted: true,
-                accountReason: "account_resolution_unresolved",
-                duplicateStatus: "clear",
-                rolloutMode: "automatic"
-            ),
-            accountResolutionJSON: try SmsProcessingJSON.canonical(
-                SmsProcessingJSON.account(.unresolved, reference: "1234")
-            ),
-            rolloutMode: "automatic",
-            now: TestFixtures.receivedAt
-        )
-        let reviewID = try await store.retainForReview(
-            claim,
-            reasons: ["account_resolution_unresolved"],
-            now: TestFixtures.receivedAt
         )
         let correctedAmountRange = try XCTUnwrap(rawBody.range(of: "INR 12.50"))
         let correctedAmountStart = rawBody[..<correctedAmountRange.lowerBound].unicodeScalars.count
@@ -360,9 +271,8 @@ final class SmsProcessingStoreTests: XCTestCase {
             endScalar: correctedAmountEnd,
             text: "INR 12.50"
         )
-        let actionID = UUID()
         let correction = ReviewCommand(
-            actionID: actionID,
+            actionID: UUID(),
             reviewCaseID: reviewID,
             expectedRevision: 0,
             kind: .correct,
@@ -397,22 +307,15 @@ final class SmsProcessingStoreTests: XCTestCase {
             retryConfiguration: nil
         )
 
-        let receipt = try await store.resolveReview(
-            correction,
-            now: TestFixtures.receivedAt
-        )
-        let replay = try await store.resolveReview(
-            correction,
-            now: TestFixtures.receivedAt
-        )
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let receipt = try await store.resolveReview(correction, now: TestFixtures.receivedAt)
+        let replay = try await store.resolveReview(correction, now: TestFixtures.receivedAt)
 
         XCTAssertEqual(receipt.resultingRevision, 1)
         XCTAssertFalse(receipt.replayed)
         XCTAssertTrue(replay.replayed)
         let verification = ModelContext(database.container)
-        let transaction = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<Transaction>()).first
-        )
+        let transaction = try XCTUnwrap(verification.fetch(FetchDescriptor<Transaction>()).first)
         XCTAssertEqual(transaction.amountMinorUnits, 1_250)
         XCTAssertEqual(transaction.currencyCode, "INR")
         XCTAssertEqual(transaction.merchant, "Unspecified counterparty")
@@ -421,15 +324,10 @@ final class SmsProcessingStoreTests: XCTestCase {
         XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsAccountAlias>()).count, 1)
         let revisions = try verification.fetch(FetchDescriptor<SmsTransactionRevision>())
         XCTAssertEqual(revisions.count, 1)
-        XCTAssertEqual(
-            revisions.first?.provenanceRawValue,
-            "user_confirmed_source_span_revision"
-        )
-        XCTAssertEqual(
-            try verification.fetch(FetchDescriptor<SmsUserFeedbackEvent>()).count,
-            1
-        )
-        await xctAssertThrowsErrorAsync {
+        XCTAssertEqual(revisions.first?.provenanceRawValue, "user_confirmed_source_span_revision")
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsUserFeedbackEvent>()).count, 1)
+
+        await TestFixtures.assertThrowsErrorAsync {
             _ = try await store.resolveReview(
                 ReviewCommand(
                     actionID: UUID(),
@@ -446,40 +344,24 @@ final class SmsProcessingStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testManualReviewCreatesTransactionAndAccountWithoutModelResult() async throws {
+    func testManualReviewCreatesTransactionAndAccountAndRejectsInvalidCommands() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
-        let alert = InboxAlert(
-            sourceIdentity: "manual-review-source",
-            contentDigest: "manual-review-digest",
-            origin: .manual,
-            sourceApplication: "Tests",
-            sender: "SYNTH",
-            rawBody: "INR 100 was credited to account **1234 from SYNTH PAYER.",
-            receivedAt: TestFixtures.receivedAt
+        let alert = TestFixtures.makeAlert(
+            body: "INR 100 was credited to account **1234 from SYNTH PAYER."
         )
         context.insert(alert)
         try context.save()
-        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
-            sourceAlertID: alert.id,
-            trigger: "test",
-            primaryCurrency: "INR",
-            enabledProfiles: ["core-en", "india"],
-            extractorEligibilityOverride: true,
-            now: TestFixtures.receivedAt
-        )
+        let snapshot = try TestFixtures.makeSnapshot(context: context, alert: alert)
         let store = SmsProcessingStore(modelContainer: database.container)
-        let claim = try await store.claim(
-            operationID: snapshot.operationID,
-            now: TestFixtures.receivedAt
-        )
+        let claim = try await store.claim(operationID: snapshot.operationID, now: TestFixtures.receivedAt)
         let reviewID = try await store.retainForReview(
             claim,
-            reasons: ["selector_unknown_or_cross_message_candidate"],
+            reasons: ["extractor_abstained"],
             now: TestFixtures.receivedAt
         )
 
-        await xctAssertThrowsErrorAsync {
+        await TestFixtures.assertThrowsErrorAsync {
             _ = try await store.resolveReview(
                 ReviewCommand(
                     actionID: UUID(),
@@ -488,6 +370,22 @@ final class SmsProcessingStoreTests: XCTestCase {
                     kind: .confirm,
                     corrections: [],
                     retryConfiguration: nil
+                ),
+                now: TestFixtures.receivedAt
+            )
+        } verify: { error in
+            XCTAssertEqual(error as? SmsProcessingStoreError, .invalidCommand)
+        }
+
+        await TestFixtures.assertThrowsErrorAsync {
+            _ = try await store.resolveReview(
+                ReviewCommand(
+                    actionID: UUID(),
+                    reviewCaseID: reviewID,
+                    expectedRevision: 0,
+                    kind: .retry,
+                    corrections: [],
+                    retryConfiguration: "invalid_mode"
                 ),
                 now: TestFixtures.receivedAt
             )
@@ -528,8 +426,8 @@ final class SmsProcessingStoreTests: XCTestCase {
         )
 
         let receipt = try await store.resolveReview(command, now: TestFixtures.receivedAt)
-
         XCTAssertEqual(receipt.resultingRevision, 1)
+
         let verification = ModelContext(database.container)
         let account = try XCTUnwrap(verification.fetch(FetchDescriptor<Account>()).first)
         XCTAssertEqual(account.name, "Synthetic account")
@@ -539,38 +437,102 @@ final class SmsProcessingStoreTests: XCTestCase {
         let alias = try XCTUnwrap(verification.fetch(FetchDescriptor<SmsAccountAlias>()).first)
         XCTAssertEqual(alias.accountID, account.id)
         XCTAssertTrue(alias.confirmedByUser)
-        let transaction = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<Transaction>()).first
-        )
+        let transaction = try XCTUnwrap(verification.fetch(FetchDescriptor<Transaction>()).first)
         XCTAssertEqual(transaction.amountMinorUnits, 10_000)
         XCTAssertEqual(transaction.direction, .credit)
         XCTAssertEqual(transaction.merchant, "Synthetic payer")
         XCTAssertEqual(transaction.accountID, account.id)
         XCTAssertEqual(transaction.parserName, "manual-review-entry")
         XCTAssertEqual(transaction.amountEvidenceText, "")
-        let updatedAlert = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<InboxAlert>()).first
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<InboxAlert>()).first?.status, .imported)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SmsTransactionRevision>()).first?.provenanceRawValue,
+            "user_supplied_review_transaction"
         )
-        XCTAssertEqual(updatedAlert.status, .imported)
-        let revision = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<SmsTransactionRevision>()).first
-        )
-        XCTAssertEqual(revision.provenanceRawValue, "user_supplied_review_transaction")
     }
 
     @MainActor
-    func testLaterLedgerEditAppendsLegacyBaselineFeedbackAndRevision() async throws {
+    func testStopAndSettleDiscardedEnforceTombstoneRedactionAndIdempotency() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
-        let alert = InboxAlert(
-            sourceIdentity: "legacy-source",
-            contentDigest: "legacy-digest",
-            origin: .manual,
-            sourceApplication: "Tests",
-            sender: "SYNTH",
-            rawBody: "INR 10 debited from account **1234.",
-            receivedAt: TestFixtures.receivedAt
+        let stopAlert = TestFixtures.makeAlert(body: "INR 50 debited from XX1234.")
+        let discardAlert = TestFixtures.makeAlert(body: "Card statement INR 50.00 ready.")
+        context.insert(stopAlert)
+        context.insert(discardAlert)
+        try context.save()
+
+        let stopSnapshot = try TestFixtures.makeSnapshot(context: context, alert: stopAlert)
+        let discardSnapshot = try TestFixtures.makeSnapshot(context: context, alert: discardAlert)
+        let store = SmsProcessingStore(modelContainer: database.container)
+
+        _ = try await store.claim(operationID: stopSnapshot.operationID, now: TestFixtures.receivedAt)
+        let firstStop = try await store.stop(
+            operationID: stopSnapshot.operationID,
+            now: TestFixtures.receivedAt
         )
+        let secondStop = try await store.stop(
+            operationID: stopSnapshot.operationID,
+            now: TestFixtures.receivedAt
+        )
+        XCTAssertEqual(firstStop.state, .retainedReview)
+        XCTAssertEqual(firstStop.reviewCaseID, secondStop.reviewCaseID)
+        XCTAssertFalse(firstStop.committed)
+
+        let discardClaim = try await store.claim(
+            operationID: discardSnapshot.operationID,
+            now: TestFixtures.receivedAt
+        )
+        let analysis = try StructuralSmsAnalyzer().analyze(
+            source: discardAlert.rawBody,
+            operation: discardSnapshot
+        )
+        try await store.recordAnalysis(
+            analysis,
+            operationID: discardSnapshot.operationID,
+            now: TestFixtures.receivedAt
+        )
+        try await store.recordSelectorResponse(
+            operationID: discardSnapshot.operationID,
+            response: DirectSelectorResponse(
+                rawOutput: #"{"decision":"none"}"#,
+                runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
+                requestJSON: #"{"message":"sensitive"}"#,
+                completion: "complete"
+            ),
+            startedAt: TestFixtures.receivedAt,
+            now: TestFixtures.receivedAt
+        )
+        try await store.settleDiscarded(
+            discardClaim,
+            retentionState: "tombstoned_none",
+            reason: "extractor_none",
+            now: TestFixtures.receivedAt
+        )
+
+        let verification = ModelContext(database.container)
+        let discardID = discardAlert.id
+        let persistedDiscard = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<InboxAlert>(predicate: #Predicate { $0.id == discardID })).first
+        )
+        XCTAssertTrue(persistedDiscard.rawBody.isEmpty)
+        XCTAssertEqual(persistedDiscard.status, .rejected)
+        XCTAssertEqual(persistedDiscard.rejectionCode, "tombstoned_none")
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SmsProcessingAnalysis>()).first?.canonicalJSON,
+            "{}"
+        )
+        let attempt = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<SmsSelectorAttempt>()).first
+        )
+        XCTAssertEqual(attempt.requestJSON, "{}")
+        XCTAssertEqual(attempt.rawOutput, #"{"decision":"none"}"#)
+    }
+
+    @MainActor
+    func testLaterLedgerEditAppendsLegacyBaselineFeedbackRevisionAndValidatesConflicts() async throws {
+        let database = try AppDatabase(inMemory: true)
+        let context = database.container.mainContext
+        let alert = TestFixtures.makeAlert(body: "INR 10 debited from account **1234.")
         let account = Account(
             name: "Synthetic account",
             bank: "Synthetic bank",
@@ -599,9 +561,8 @@ final class SmsProcessingStoreTests: XCTestCase {
         context.insert(transaction)
         try context.save()
 
-        let actionID = UUID()
         let command = TransactionProjectionEditCommand(
-            actionID: actionID,
+            actionID: UUID(),
             transactionID: transaction.id,
             expectedRevision: -1,
             amountMinorUnits: 1_250,
@@ -623,43 +584,80 @@ final class SmsProcessingStoreTests: XCTestCase {
         )
         let store = SmsProcessingStore(modelContainer: database.container)
         let receipt = try await store.editTransactionProjection(
-            command, now: TestFixtures.receivedAt.addingTimeInterval(1)
+            command,
+            now: TestFixtures.receivedAt.addingTimeInterval(1)
         )
         let replay = try await store.editTransactionProjection(
-            command, now: TestFixtures.receivedAt.addingTimeInterval(2)
+            command,
+            now: TestFixtures.receivedAt.addingTimeInterval(2)
         )
 
         XCTAssertEqual(receipt.resultingRevision, 1)
         XCTAssertFalse(receipt.replayed)
         XCTAssertTrue(replay.replayed)
-        let verification = ModelContext(database.container)
-        let updated = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<Transaction>()).first
+
+        let confirmUnchanged = try await store.editTransactionProjection(
+            TransactionProjectionEditCommand(
+                actionID: UUID(),
+                transactionID: transaction.id,
+                expectedRevision: 1,
+                amountMinorUnits: 1_250,
+                currencyCode: "INR",
+                direction: .debit,
+                merchant: "Corrected merchant",
+                accountID: account.id,
+                occurredAt: TestFixtures.receivedAt,
+                corrections: []
+            ),
+            now: TestFixtures.receivedAt.addingTimeInterval(3)
         )
+        XCTAssertEqual(confirmUnchanged.resultingRevision, 2)
+
+        await TestFixtures.assertThrowsErrorAsync {
+            _ = try await store.editTransactionProjection(
+                TransactionProjectionEditCommand(
+                    actionID: UUID(),
+                    transactionID: transaction.id,
+                    expectedRevision: 0,
+                    amountMinorUnits: 1_250,
+                    currencyCode: "INR",
+                    direction: .debit,
+                    merchant: "Stale revision",
+                    accountID: account.id,
+                    occurredAt: TestFixtures.receivedAt,
+                    corrections: []
+                )
+            )
+        } verify: { error in
+            XCTAssertEqual(error as? SmsProcessingStoreError, .revisionConflict)
+        }
+
+        let verification = ModelContext(database.container)
+        let updated = try XCTUnwrap(verification.fetch(FetchDescriptor<Transaction>()).first)
         XCTAssertEqual(updated.amountMinorUnits, 1_250)
         XCTAssertEqual(updated.merchant, "Corrected merchant")
         XCTAssertTrue(updated.isEdited)
         let revisions = try verification.fetch(
             FetchDescriptor<SmsTransactionRevision>(sortBy: [SortDescriptor(\.revision)])
         )
-        XCTAssertEqual(revisions.map(\.revision), [0, 1])
+        XCTAssertEqual(revisions.map(\.revision), [0, 1, 2])
         XCTAssertEqual(
             revisions.map(\.provenanceRawValue),
             [
                 "legacy_current_state_original_history_unknown",
                 "user_corrected_projection",
+                "user_confirmed_unchanged_projection",
             ]
         )
-        let feedback = try XCTUnwrap(
-            verification.fetch(FetchDescriptor<SmsUserFeedbackEvent>()).first
+        let feedback = try verification.fetch(
+            FetchDescriptor<SmsUserFeedbackEvent>(sortBy: [SortDescriptor(\.createdAt)])
         )
-        XCTAssertNil(feedback.reviewCaseID)
-        XCTAssertEqual(feedback.transactionID, transaction.id)
-        XCTAssertEqual(feedback.actionRawValue, "correct")
+        XCTAssertEqual(feedback.map(\.actionRawValue), ["correct", "confirmed_unchanged"])
+        XCTAssertTrue(feedback.allSatisfy { $0.reviewCaseID == nil && $0.transactionID == transaction.id })
     }
 
     @MainActor
-    func testFiveMinuteDuplicateWindowExcludesCurrentSourceAndChecksWindowBoundary() async throws {
+    func testFiveMinuteDuplicateWindowChecksBoundarySourceAndMatchDimensions() async throws {
         let database = try AppDatabase(inMemory: true)
         let context = database.container.mainContext
         let account = Account(
@@ -667,6 +665,13 @@ final class SmsProcessingStoreTests: XCTestCase {
             bank: "HDFC Bank",
             kind: .account,
             suffix: "1234",
+            now: TestFixtures.receivedAt
+        )
+        let otherAccount = Account(
+            name: "Second Checking",
+            bank: "Axis Bank",
+            kind: .account,
+            suffix: "5678",
             now: TestFixtures.receivedAt
         )
         let existingSourceID = UUID()
@@ -686,11 +691,13 @@ final class SmsProcessingStoreTests: XCTestCase {
             now: TestFixtures.receivedAt
         )
         context.insert(account)
+        context.insert(otherAccount)
         context.insert(persisted)
         try context.save()
 
         let store = SmsProcessingStore(modelContainer: database.container)
         let otherSourceID = UUID()
+
         let atBoundary = try await store.duplicateStatus(
             operationID: UUID(),
             sourceID: otherSourceID,
@@ -715,6 +722,30 @@ final class SmsProcessingStoreTests: XCTestCase {
         )
         XCTAssertEqual(outsideBoundary, "clear")
 
+        let differentAccount = try await store.duplicateStatus(
+            operationID: UUID(),
+            sourceID: otherSourceID,
+            stableEventID: UUID(),
+            accountID: otherAccount.id,
+            direction: "debit",
+            minorUnits: 50_000,
+            currency: "INR",
+            occurredAt: TestFixtures.receivedAt
+        )
+        XCTAssertEqual(differentAccount, "clear")
+
+        let differentDirection = try await store.duplicateStatus(
+            operationID: UUID(),
+            sourceID: otherSourceID,
+            stableEventID: UUID(),
+            accountID: account.id,
+            direction: "credit",
+            minorUnits: 50_000,
+            currency: "INR",
+            occurredAt: TestFixtures.receivedAt
+        )
+        XCTAssertEqual(differentDirection, "clear")
+
         let sameSource = try await store.duplicateStatus(
             operationID: UUID(),
             sourceID: existingSourceID,
@@ -727,17 +758,93 @@ final class SmsProcessingStoreTests: XCTestCase {
         )
         XCTAssertEqual(sameSource, "already_persisted")
     }
-}
 
-@MainActor
-private func xctAssertThrowsErrorAsync(
-    _ expression: () async throws -> Void,
-    verify: (Error) -> Void
-) async {
-    do {
-        try await expression()
-        XCTFail("Expected async expression to throw")
-    } catch {
-        verify(error)
+    @MainActor
+    private func seedGroundedReview(
+        database: AppDatabase,
+        body: String,
+        amountText: String,
+        amountValue: String,
+        directionText: String,
+        accountReference: String,
+        accountText: String,
+        counterpartyText: String?
+    ) async throws -> UUID {
+        let context = database.container.mainContext
+        let alert = TestFixtures.makeAlert(body: body)
+        context.insert(alert)
+        try context.save()
+        let snapshot = try TestFixtures.makeSnapshot(context: context, alert: alert, trigger: "manual")
+        let analysis = try StructuralSmsAnalyzer().analyze(source: body, operation: snapshot)
+        let output = try TestFixtures.strictPostedOutput(
+            for: body,
+            amountText: amountText,
+            amountValue: amountValue,
+            directionText: directionText,
+            accountReference: accountReference,
+            accountText: accountText,
+            counterpartyText: counterpartyText
+        )
+        let extraction = try SmsExtractorValidator().validate(
+            rawOutput: output,
+            source: body,
+            primaryCurrency: "INR"
+        )
+        let extracted = try XCTUnwrap(extraction.transaction)
+        let fingerprint = CanonicalJSON.sha256(
+            "\(extracted.minorUnits)\0\(extracted.currency)\0"
+                + "\(extracted.direction.rawValue)\0\0\(snapshot.configuration.receivedTimestamp.epochMs)"
+        )
+        let resultJSON = try SmsProcessingJSON.result(
+            status: "review",
+            extraction: extraction,
+            operation: snapshot,
+            account: SmsProcessingJSON.account(.unresolved, reference: extracted.accountReference),
+            duplicate: SmsProcessingJSON.duplicate(
+                status: "clear",
+                operation: snapshot,
+                fingerprint: fingerprint
+            ),
+            gate: SmsProcessingJSON.gate(
+                posted: true,
+                accountReason: "account_resolution_unresolved",
+                duplicateStatus: "clear",
+                rolloutMode: "automatic"
+            ),
+            reasons: ["account_resolution_unresolved"]
+        )
+        let store = SmsProcessingStore(modelContainer: database.container)
+        let claim = try await store.claim(operationID: snapshot.operationID, now: TestFixtures.receivedAt)
+        try await store.recordAnalysis(
+            analysis,
+            operationID: snapshot.operationID,
+            now: TestFixtures.receivedAt
+        )
+        try await store.recordNormalizedResult(
+            operationID: snapshot.operationID,
+            semanticResultJSON: resultJSON,
+            decision: "posted"
+        )
+        try await store.recordGateDecision(
+            claim,
+            result: "review_required",
+            primaryReason: "account_resolution_unresolved",
+            checksJSON: try SmsProcessingJSON.checksJSON(
+                posted: true,
+                accountReason: "account_resolution_unresolved",
+                duplicateStatus: "clear",
+                rolloutMode: "automatic"
+            ),
+            accountResolutionJSON: try SmsProcessingJSON.canonical(
+                SmsProcessingJSON.account(.unresolved, reference: extracted.accountReference)
+            ),
+            rolloutMode: "automatic",
+            now: TestFixtures.receivedAt
+        )
+        return try await store.retainForReview(
+            claim,
+            reasons: ["account_resolution_unresolved"],
+            now: TestFixtures.receivedAt
+        )
     }
 }

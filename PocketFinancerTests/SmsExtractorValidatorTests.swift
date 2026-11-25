@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import PocketFinancer
@@ -109,9 +110,125 @@ final class SmsExtractorValidatorTests: XCTestCase {
         XCTAssertEqual(result.transaction?.currency, "USD")
     }
 
-    func testStrictOutputRejectsDuplicateKeyTrailingDocumentExponentAndDecimalNumbers() throws {
+    func testCurrencyGroundingEnforcesExplicitIsoCodesSymbolsAndEnabledProfiles() throws {
         let validator = SmsExtractorValidator()
-        let source = "INR 10.00 debited from XX1234"
+
+        let usdConflictSource = "USD 25.00 debited from XX1234."
+        let usdConflictRaw = try TestFixtures.strictPostedOutput(
+            for: usdConflictSource,
+            amountText: "USD 25.00",
+            amountValue: "25.00",
+            currency: "INR",
+            directionText: "debited",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: nil
+        )
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: usdConflictRaw,
+                source: usdConflictSource,
+                primaryCurrency: "INR"
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .currencyInvalid)
+        }
+
+        let euroSource = "€25.00 paid on card XX1234."
+        let euroValid = try TestFixtures.strictPostedOutput(
+            for: euroSource,
+            amountText: "€25.00",
+            amountValue: "25.00",
+            currency: "EUR",
+            directionText: "paid",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: nil
+        )
+        let euroResult = try validator.validate(
+            rawOutput: euroValid,
+            source: euroSource,
+            primaryCurrency: "INR",
+            enabledProfiles: ["core-en"]
+        )
+        XCTAssertEqual(euroResult.transaction?.currency, "EUR")
+
+        let noMarkerSource = "Paid 25.00 from card XX1234."
+        let wrongFallbackRaw = try TestFixtures.strictPostedOutput(
+            for: noMarkerSource,
+            amountText: "25.00",
+            amountValue: "25.00",
+            currency: "EUR",
+            directionText: "Paid",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: nil
+        )
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: wrongFallbackRaw,
+                source: noMarkerSource,
+                primaryCurrency: "USD",
+                enabledProfiles: ["core-en"]
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .currencyInvalid)
+        }
+
+        let inrMarkerWithoutIndiaProfile = "Rs.25.00 paid from card XX1234."
+        let rsAsUsd = try TestFixtures.strictPostedOutput(
+            for: inrMarkerWithoutIndiaProfile,
+            amountText: "Rs.25.00",
+            amountValue: "25.00",
+            currency: "USD",
+            directionText: "paid",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: nil
+        )
+        let withoutIndia = try validator.validate(
+            rawOutput: rsAsUsd,
+            source: inrMarkerWithoutIndiaProfile,
+            primaryCurrency: "USD",
+            enabledProfiles: ["core-en"]
+        )
+        XCTAssertEqual(withoutIndia.transaction?.currency, "USD")
+
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: rsAsUsd,
+                source: inrMarkerWithoutIndiaProfile,
+                primaryCurrency: "USD",
+                enabledProfiles: ["core-en", "india"]
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .currencyInvalid)
+        }
+    }
+
+    func testStrictOutputRejectsEnvelopeSizeShapeAndFieldDisagreementErrors() throws {
+        let validator = SmsExtractorValidator()
+        let source = "INR 10.00 debited from XX1234 at Demo Store."
+
+        let oversized = String(repeating: " ", count: SmsExtractorValidator.rawOutputByteLimit + 1)
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: oversized, source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .outputTruncated)
+        }
+
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: "[]", source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .outputNotObject)
+        }
+
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: #"{"decision":1}"#, source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .decisionTypeInvalid)
+        }
+
         XCTAssertThrowsError(
             try validator.validate(
                 rawOutput: #"{"decision":"none","decision":"abstain"}"#,
@@ -119,11 +236,9 @@ final class SmsExtractorValidatorTests: XCTestCase {
                 primaryCurrency: "INR"
             )
         ) { error in
-            XCTAssertEqual(
-                (error as? SmsExtractorValidationError)?.reasonCode,
-                "extractor_duplicate_json_key"
-            )
+            XCTAssertEqual(error as? SmsExtractorValidationError, .duplicateJSONKey)
         }
+
         XCTAssertThrowsError(
             try validator.validate(
                 rawOutput: #"{"decision":"none"} {}"#,
@@ -131,19 +246,55 @@ final class SmsExtractorValidatorTests: XCTestCase {
                 primaryCurrency: "INR"
             )
         ) { error in
-            XCTAssertEqual(
-                (error as? SmsExtractorValidationError)?.reasonCode,
-                "extractor_extra_content"
-            )
+            XCTAssertEqual(error as? SmsExtractorValidationError, .extraContent)
         }
+
         XCTAssertThrowsError(
             try validator.validate(rawOutput: #"{"decision":1e0}"#, source: source, primaryCurrency: "INR")
         ) { error in
-            XCTAssertEqual(
-                (error as? SmsExtractorValidationError)?.reasonCode,
-                "extractor_malformed_json"
-            )
+            XCTAssertEqual(error as? SmsExtractorValidationError, .malformedJSON)
         }
+
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: #"{"decision":"posted","direction":null,"account":null,"counterparty":null}"#,
+                source: source,
+                primaryCurrency: "INR"
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .missingAmount)
+        }
+
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: #"{"decision":"posted","amount":null,"account":null,"counterparty":null}"#,
+                source: source,
+                primaryCurrency: "INR"
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .missingDirection)
+        }
+
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: #"{"decision":"posted","amount":null,"direction":null,"counterparty":null}"#,
+                source: source,
+                primaryCurrency: "INR"
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .missingAccount)
+        }
+
+        XCTAssertThrowsError(
+            try validator.validate(
+                rawOutput: #"{"decision":"posted","amount":null,"direction":null,"account":null}"#,
+                source: source,
+                primaryCurrency: "INR"
+            )
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .postedFieldSetInvalid)
+        }
+
         let decimalScalar =
             #"{"decision":"posted","amount":{"value":"10.00","currency":"INR","#
             + #""evidence":{"start_scalar":0.0,"end_scalar":9,"text":"INR 10.00"}},"#
@@ -153,10 +304,53 @@ final class SmsExtractorValidatorTests: XCTestCase {
         XCTAssertThrowsError(
             try validator.validate(rawOutput: decimalScalar, source: source, primaryCurrency: "INR")
         ) { error in
-            XCTAssertEqual(
-                (error as? SmsExtractorValidationError)?.reasonCode,
-                "extractor_malformed_json"
-            )
+            XCTAssertEqual(error as? SmsExtractorValidationError, .malformedJSON)
+        }
+
+        let amountMismatch = try TestFixtures.strictPostedOutput(
+            for: source,
+            amountText: "INR 10.00",
+            amountValue: "11.00",
+            directionText: "debited",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: "Demo Store"
+        )
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: amountMismatch, source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .amountValueDisagreement)
+        }
+
+        let directionMismatch = try TestFixtures.strictPostedOutput(
+            for: source,
+            amountText: "INR 10.00",
+            amountValue: "10.00",
+            direction: "credit",
+            directionText: "debited",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: "Demo Store"
+        )
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: directionMismatch, source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .directionInvalid)
+        }
+
+        let accountMismatch = try TestFixtures.strictPostedOutput(
+            for: source,
+            amountText: "INR 10.00",
+            amountValue: "10.00",
+            directionText: "debited",
+            accountReference: "XX9999",
+            accountText: "XX1234",
+            counterpartyText: "Demo Store"
+        )
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: accountMismatch, source: source, primaryCurrency: "INR")
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .accountInvalid)
         }
     }
 
@@ -166,15 +360,35 @@ final class SmsExtractorValidatorTests: XCTestCase {
         XCTAssertEqual(try span.nsRange(in: source), NSRange(location: 2, length: 2))
     }
 
-    func testAccountNormalizationUsesFrozenVpaGrammar() {
+    func testAccountNormalizationSupportsFrozenVpaGrammarAndRejectsAmbiguousMaskedRefs() throws {
         XCTAssertEqual(SmsExtractorNormalizer.normalizeAccount("ab@1x"), "ab@1x")
+        XCTAssertEqual(SmsExtractorNormalizer.normalizeAccount("USER.Name@Bank"), "user.name@bank")
         XCTAssertNil(SmsExtractorNormalizer.normalizeAccount(".a@example.com"))
+        XCTAssertNil(SmsExtractorNormalizer.normalizeAccount("XX1234 and XX5678"))
+
+        let vpaSource = "INR 99.00 debited from user.name@synthbank at Cafe."
+        let vpaRaw = try TestFixtures.strictPostedOutput(
+            for: vpaSource,
+            amountText: "INR 99.00",
+            amountValue: "99.00",
+            directionText: "debited",
+            accountReference: "user.name@synthbank",
+            accountText: "user.name@synthbank",
+            counterpartyText: "Cafe"
+        )
+        let validated = try SmsExtractorValidator().validate(
+            rawOutput: vpaRaw,
+            source: vpaSource,
+            primaryCurrency: "INR"
+        )
+        XCTAssertEqual(validated.transaction?.accountReference, "user.name@synthbank")
     }
 
     func testExactMoneyRejectsCoercionAndHonorsInt64Boundary() throws {
         XCTAssertThrowsError(try SmsExtractorNormalizer.minorUnits(decimal: "01.00", currency: "INR"))
         XCTAssertThrowsError(try SmsExtractorNormalizer.minorUnits(decimal: "+1.00", currency: "INR"))
         XCTAssertThrowsError(try SmsExtractorNormalizer.minorUnits(decimal: "1.001", currency: "INR"))
+        XCTAssertThrowsError(try SmsExtractorNormalizer.minorUnits(decimal: "0.00", currency: "INR"))
         XCTAssertThrowsError(
             try SmsExtractorNormalizer.minorUnits(decimal: "92233720368547758.08", currency: "INR")
         )

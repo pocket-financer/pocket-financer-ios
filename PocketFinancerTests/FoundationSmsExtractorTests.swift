@@ -1,8 +1,49 @@
+import Foundation
 import XCTest
 
 @testable import PocketFinancer
 
 final class FoundationSmsExtractorTests: XCTestCase {
+    func testFlatExtractionEncodingMatchesRequiredAppleFlatSchemaKeys() throws {
+        let flat = FlatSmsExtraction(
+            decision: "posted",
+            amountValue: "500.00",
+            amountCurrency: "INR",
+            amountStart: 0,
+            amountEnd: 10,
+            amountText: "INR 500.00",
+            directionValue: "debit",
+            directionStart: 11,
+            directionEnd: 18,
+            directionText: "debited",
+            accountReference: "XX1234",
+            accountStart: 24,
+            accountEnd: 30,
+            accountText: "XX1234",
+            counterpartyValue: "Demo Store",
+            counterpartyStart: 34,
+            counterpartyEnd: 44,
+            counterpartyText: "Demo Store"
+        )
+        let encoded = try JSONEncoder().encode(flat)
+        let decoded = try JSONDecoder().decode(FlatSmsExtraction.self, from: encoded)
+        XCTAssertEqual(decoded, flat)
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        let schema = try SmsContractAssets.appleFlatSchema()
+        let required = try XCTUnwrap(schema["required"] as? [String])
+        XCTAssertEqual(Set(object.keys), Set(required))
+    }
+
+    func testInstructionsLoadVerifiedAppleFoundationModelsPrompt() throws {
+        let instructions = try FoundationSmsExtractor.instructions()
+
+        XCTAssertTrue(instructions.contains("pocketfinancer.apple-fm-extractor-prompt/1"))
+        XCTAssertTrue(instructions.contains(#""posted""#))
+    }
+
     func testNonPostedProjectionProducesCanonicalDocumentOrFailsClosedOnExtraFields() throws {
         XCTAssertEqual(
             try FoundationSmsExtractor.projectFlatExtraction(FlatSmsExtraction(decision: "none")),
@@ -96,16 +137,82 @@ final class FoundationSmsExtractorTests: XCTestCase {
 
         let outOfBoundsRaw = try projected(counterpartyStart: 0, counterpartyEnd: 0)
         XCTAssertThrowsError(
-            try SmsExtractorValidator().validate(rawOutput: outOfBoundsRaw, source: source, primaryCurrency: "INR")
+            try SmsExtractorValidator().validate(
+                rawOutput: outOfBoundsRaw,
+                source: source,
+                primaryCurrency: "INR"
+            )
         ) { error in
             XCTAssertEqual(error as? SmsExtractorValidationError, .evidenceOutOfBounds)
         }
 
         let invalidValueRaw = try projected(counterpartyStart: 24, counterpartyEnd: 30)
         XCTAssertThrowsError(
-            try SmsExtractorValidator().validate(rawOutput: invalidValueRaw, source: source, primaryCurrency: "INR")
+            try SmsExtractorValidator().validate(
+                rawOutput: invalidValueRaw,
+                source: source,
+                primaryCurrency: "INR"
+            )
         ) { error in
             XCTAssertEqual(error as? SmsExtractorValidationError, .counterpartyInvalid)
         }
+    }
+
+    func testParserAndValidationErrorsExposeDistinctSafeCodesAndRetryability() {
+        let retryable: [(TransactionParserError, String)] = [
+            (.modelUnavailable(.appleIntelligenceNotEnabled), "model_appleIntelligenceNotEnabled"),
+            (.modelUnavailable(.modelNotReady), "model_modelNotReady"),
+            (.modelUnavailable(.unknown), "model_unknown"),
+            (.timedOut, "model_timed_out"),
+            (.cancelled, "model_cancelled"),
+            (.assetsUnavailable, "model_assets_unavailable"),
+            (.rateLimited, "model_rate_limited"),
+            (.concurrentRequests, "model_concurrent_requests"),
+        ]
+        for (error, code) in retryable {
+            XCTAssertTrue(error.isRetryable, code)
+            XCTAssertEqual(error.safeCode, code)
+        }
+
+        let nonRetryable: [(TransactionParserError, String)] = [
+            (.modelUnavailable(.deviceNotEligible), "model_deviceNotEligible"),
+            (.unsupportedLanguageOrLocale, "model_unsupported_language"),
+            (.guardrailViolation, "model_guardrail_violation"),
+            (.unsupportedGuide, "model_unsupported_guide"),
+            (.decodingFailure, "model_decoding_failed"),
+            (.modelRefused, "model_refused"),
+            (.contextWindowExceeded, "model_context_window_exceeded"),
+            (.generationFailed, "model_generation_failed"),
+        ]
+        for (error, code) in nonRetryable {
+            XCTAssertFalse(error.isRetryable, code)
+            XCTAssertEqual(error.safeCode, code)
+        }
+
+        let allValidationErrors: [SmsExtractorValidationError] = [
+            .malformedJSON,
+            .duplicateJSONKey,
+            .extraContent,
+            .outputNotObject,
+            .decisionTypeInvalid,
+            .unknownDecision,
+            .nonPostedExtraFields,
+            .missingAmount,
+            .missingDirection,
+            .missingAccount,
+            .postedFieldSetInvalid,
+            .amountInvalid,
+            .currencyInvalid,
+            .directionInvalid,
+            .accountInvalid,
+            .counterpartyInvalid,
+            .evidenceInvalid,
+            .evidenceOutOfBounds,
+            .evidenceMismatch,
+            .amountValueDisagreement,
+            .outputTruncated,
+        ]
+        let codes = allValidationErrors.map(\.reasonCode)
+        XCTAssertEqual(Set(codes).count, allValidationErrors.count)
     }
 }
