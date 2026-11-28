@@ -29,6 +29,7 @@ struct LocalDataService {
         // owner has completed an erase. Existing model work may finish in memory, but it
         // no longer owns permission to mutate the protected store.
         AlertIngestionService.invalidateAllProcessingClaims()
+        SmsProcessingStore.invalidateForErase(container: context.container)
 
         do {
             for receipt in try context.fetch(FetchDescriptor<SmsTraceImportReceipt>()) {

@@ -5,9 +5,20 @@ import XCTest
 @testable import PocketFinancer
 
 enum TestFixtures {
+    /// Retain in-memory SwiftData containers for the test process lifetime to work around
+    /// an iOS 26 Simulator teardown abort when a fresh container is deallocated synchronously.
+    @MainActor private static var retainedInMemoryDatabases: [AppDatabase] = []
+
     static let receivedAt = Date(timeIntervalSince1970: 1_785_955_200)
     static let validBody =
         "HDFC Bank: Rs.500.00 debited from a/c XXXXXX0000 on 05-08-2026 at Demo Store."
+
+    @MainActor
+    static func makeInMemoryDatabase() throws -> AppDatabase {
+        let database = try AppDatabase(inMemory: true)
+        retainedInMemoryDatabases.append(database)
+        return database
+    }
 
     static func strictPostedOutput(
         for source: String,

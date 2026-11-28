@@ -24,7 +24,7 @@ private final class RecordingProcessingObserver: SmsProcessingObserver {
 @MainActor
 final class SmsProcessingCoordinatorTests: XCTestCase {
     func testAutoSavesPostedExtractionWithResolvedAccountReplaysIdempotentlyAndEmitsOrderedTrace() async throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let account = Account(
             name: "HDFC Savings",
@@ -118,7 +118,7 @@ final class SmsProcessingCoordinatorTests: XCTestCase {
     }
 
     func testFiveMinuteDuplicateWindowRoutesWithinWindowToReviewAndAutoSavesOutside() async throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let account = Account(
             name: "Card 1234",
@@ -197,7 +197,7 @@ final class SmsProcessingCoordinatorTests: XCTestCase {
     }
 
     func testBodyFreeTombstonesEraseRawEvidenceForPrefilterAndExtractorNone() async throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let otpAlert = TestFixtures.makeAlert(body: "Use 482910 as your OTP to log in.")
         let balanceAlert = TestFixtures.makeAlert(body: "Your HDFC card balance is INR 10,000.00.")
@@ -338,7 +338,7 @@ final class SmsProcessingCoordinatorTests: XCTestCase {
         ]
 
         for testCase in cases {
-            let database = try AppDatabase(inMemory: true)
+            let database = try TestFixtures.makeInMemoryDatabase()
             let context = database.container.mainContext
             let alert = TestFixtures.makeAlert(body: body)
             context.insert(alert)
@@ -376,7 +376,7 @@ final class SmsProcessingCoordinatorTests: XCTestCase {
     }
 
     func testCancellationStopsCleanlyAndSourceDigestMismatchRetainsForReview() async throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let alert = TestFixtures.makeAlert()
         context.insert(alert)
@@ -418,5 +418,251 @@ final class SmsProcessingCoordinatorTests: XCTestCase {
             return XCTFail("Expected configuration mismatch review, got \(mismatchOutcome)")
         }
         XCTAssertEqual(reasons, ["persistence_configuration_hash_mismatch"])
+    }
+
+    func testRetryAfterConfirmingAccountAutoSavesAndClosesOpenReviewCase() async throws {
+        let database = try TestFixtures.makeInMemoryDatabase()
+        let context = database.container.mainContext
+        let body = "INR 350.00 paid from account **7777 at Book Shop."
+        let alert = TestFixtures.makeAlert(body: body)
+        context.insert(alert)
+        try context.save()
+
+        let rawOutput = try TestFixtures.strictPostedOutput(
+            for: body,
+            amountText: "INR 350.00",
+            amountValue: "350.00",
+            direction: "debit",
+            directionText: "paid",
+            accountReference: "**7777",
+            accountText: "**7777",
+            counterpartyText: "Book Shop"
+        )
+        let store = SmsProcessingStore.shared(for: database.container)
+        let firstSnapshot = try TestFixtures.makeSnapshot(context: context, alert: alert)
+        let unresolvedCoordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedSmsExtractor(rawOutput: rawOutput),
+            accountResolver: { _ in .unresolved }
+        )
+        let firstOutcome = await unresolvedCoordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: firstSnapshot
+        )
+        guard case .retainedForReview(_, let reviewCaseID, _) = firstOutcome else {
+            return XCTFail("Expected initial unresolved account to retain for review")
+        }
+
+        let account = Account(name: "Confirmed Card", bank: "HDFC", kind: .card, suffix: "7777")
+        context.insert(account)
+        try context.save()
+
+        let retrySnapshot = try SmsOperationSnapshotFactory(context: context).create(
+            sourceAlertID: alert.id,
+            parentOperationID: firstSnapshot.operationID,
+            trigger: "retry",
+            primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"],
+            extractorEligibilityOverride: true,
+            now: TestFixtures.receivedAt.addingTimeInterval(5)
+        )
+        let resolvedCoordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedSmsExtractor(rawOutput: rawOutput),
+            accountResolver: { _ in .unique(accountID: account.id) }
+        )
+        let retryOutcome = await resolvedCoordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: retrySnapshot
+        )
+        guard case .persisted(_, let transactionIDs, let alreadyCommitted) = retryOutcome else {
+            return XCTFail("Expected retry to auto-save, got \(retryOutcome)")
+        }
+        XCTAssertEqual(transactionIDs.count, 1)
+        XCTAssertFalse(alreadyCommitted)
+
+        let verification = ModelContext(database.container)
+        let reviewCase = try XCTUnwrap(
+            verification.fetch(
+                FetchDescriptor<SmsReviewCase>(predicate: #Predicate { $0.id == reviewCaseID })
+            ).first
+        )
+        XCTAssertEqual(reviewCase.state, .confirmed)
+        XCTAssertEqual(reviewCase.currentOperationID, retrySnapshot.operationID)
+    }
+
+    func testPartialGroundedEvidencePersistedOnValidationFailureAndAbstain() async throws {
+        let database = try TestFixtures.makeInMemoryDatabase()
+        let context = database.container.mainContext
+        let body = "INR 620.00 processed on card **9090 at City Market."
+        let alert = TestFixtures.makeAlert(body: body)
+        context.insert(alert)
+        try context.save()
+
+        // Valid amount and account spans, invalid direction wording ("processed" has no debit/credit cue).
+        let amountRange = try XCTUnwrap(body.range(of: "INR 620.00"))
+        let amountStart = body[..<amountRange.lowerBound].unicodeScalars.count
+        let amountEnd = amountStart + body[amountRange].unicodeScalars.count
+        let dirRange = try XCTUnwrap(body.range(of: "processed"))
+        let dirStart = body[..<dirRange.lowerBound].unicodeScalars.count
+        let dirEnd = dirStart + body[dirRange].unicodeScalars.count
+        let accRange = try XCTUnwrap(body.range(of: "**9090"))
+        let accStart = body[..<accRange.lowerBound].unicodeScalars.count
+        let accEnd = accStart + body[accRange].unicodeScalars.count
+        let partialOutput = """
+            {"account":{"evidence":{"end_scalar":\(accEnd),"start_scalar":\(accStart),"text":"**9090"},"reference":"**9090"},"amount":{"currency":"INR","evidence":{"end_scalar":\(amountEnd),"start_scalar":\(amountStart),"text":"INR 620.00"},"value":"620.00"},"counterparty":null,"decision":"posted","direction":{"evidence":{"end_scalar":\(dirEnd),"start_scalar":\(dirStart),"text":"processed"},"value":"debit"}}
+            """
+
+        let store = SmsProcessingStore.shared(for: database.container)
+        let snapshot = try TestFixtures.makeSnapshot(context: context, alert: alert)
+        let coordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedSmsExtractor(rawOutput: partialOutput),
+            accountResolver: { _ in .unresolved }
+        )
+        let outcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: snapshot
+        )
+        guard case .retainedForReview(_, let reviewCaseID, let reasons) = outcome else {
+            return XCTFail("Expected retained review for partial failure, got \(outcome)")
+        }
+        XCTAssertTrue(reasons.contains("extractor_direction_invalid"))
+
+        let details = try await store.loadReviewDetails(reviewCaseID: reviewCaseID)
+        XCTAssertNil(details.proposal)
+        XCTAssertEqual(details.retainedEvidence.furthestStage, "extractor_validation")
+        XCTAssertEqual(details.retainedEvidence.slmFields[.amount]?.normalizedAmount?.minorUnits, 62_000)
+        XCTAssertEqual(details.retainedEvidence.slmFields[.account]?.normalizedAccount, "9090")
+        XCTAssertEqual(details.retainedEvidence.slmFields[.direction]?.validationState, .groundedOnly)
+        XCTAssertFalse(details.retainedEvidence.analyzerHints.isEmpty)
+    }
+
+    func testUnexpectedErrorWhileHoldingClaimRetainsImmediatelyWithoutStall() async throws {
+        struct SyntheticResolverError: Error {}
+
+        let database = try TestFixtures.makeInMemoryDatabase()
+        let context = database.container.mainContext
+        let body = "INR 100.00 paid from account **5555 at Demo Cafe."
+        let alert = TestFixtures.makeAlert(body: body)
+        context.insert(alert)
+        try context.save()
+
+        let rawOutput = try TestFixtures.strictPostedOutput(
+            for: body,
+            amountText: "INR 100.00",
+            amountValue: "100.00",
+            direction: "debit",
+            directionText: "paid",
+            accountReference: "**5555",
+            accountText: "**5555",
+            counterpartyText: "Demo Cafe"
+        )
+        let store = SmsProcessingStore.shared(for: database.container)
+        let snapshot = try TestFixtures.makeSnapshot(context: context, alert: alert)
+        let coordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedSmsExtractor(rawOutput: rawOutput),
+            accountResolver: { _ in throw SyntheticResolverError() }
+        )
+        let outcome = await coordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: snapshot
+        )
+        guard case .retainedForReview(_, let reviewCaseID, let reasons) = outcome else {
+            return XCTFail("Expected immediate retained review on unexpected error, got \(outcome)")
+        }
+        XCTAssertEqual(reasons, ["operation_interrupted"])
+
+        let verification = ModelContext(database.container)
+        let op = try XCTUnwrap(verification.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
+        XCTAssertEqual(op.state, .retainedReview)
+        XCTAssertNil(op.ownerToken)
+        XCTAssertNotNil(op.settledAt)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), [reviewCaseID])
+    }
+
+    func testSettleDiscardedScrubsAllPriorOperationsForSourceAlert() async throws {
+        let database = try TestFixtures.makeInMemoryDatabase()
+        let context = database.container.mainContext
+        let body = "Your HDFC card balance is INR 10,000.00."
+        let alert = TestFixtures.makeAlert(body: body)
+        context.insert(alert)
+        try context.save()
+
+        let store = SmsProcessingStore.shared(for: database.container)
+        let firstOp = try TestFixtures.makeSnapshot(context: context, alert: alert)
+        let abstainCoordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedSmsExtractor(rawOutput: #"{"decision":"abstain"}"#),
+            accountResolver: { _ in .unresolved }
+        )
+        let firstOutcome = await abstainCoordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: firstOp
+        )
+        guard case .retainedForReview = firstOutcome else {
+            return XCTFail("Expected initial abstain to retain for review")
+        }
+
+        let secondOp = try SmsOperationSnapshotFactory(context: context).create(
+            sourceAlertID: alert.id,
+            parentOperationID: firstOp.operationID,
+            trigger: "retry",
+            primaryCurrency: "INR",
+            enabledProfiles: ["core-en", "india"],
+            extractorEligibilityOverride: true,
+            now: TestFixtures.receivedAt.addingTimeInterval(5)
+        )
+        let noneCoordinator = SmsProcessingCoordinator(
+            store: store,
+            extractor: FixedSmsExtractor(rawOutput: #"{"decision":"none"}"#),
+            accountResolver: { _ in .unresolved }
+        )
+        let secondOutcome = await noneCoordinator.process(
+            source: AdmittedMessageRef(
+                sourceID: alert.id,
+                admissionReceiptID: alert.id,
+                sourceDigest: CanonicalJSON.sha256(body)
+            ),
+            operation: secondOp
+        )
+        XCTAssertEqual(
+            secondOutcome,
+            .terminallyDiscarded(operationID: secondOp.operationID, reason: "extractor_none")
+        )
+
+        let verification = ModelContext(database.container)
+        let analyses = try verification.fetch(FetchDescriptor<SmsProcessingAnalysis>())
+        XCTAssertEqual(analyses.count, 2)
+        XCTAssertTrue(analyses.allSatisfy { $0.canonicalJSON == "{}" })
+        let attempts = try verification.fetch(FetchDescriptor<SmsSelectorAttempt>())
+        XCTAssertEqual(attempts.count, 2)
+        XCTAssertTrue(attempts.allSatisfy { $0.requestJSON == "{}" })
+        let results = try verification.fetch(FetchDescriptor<SmsReconstructedResult>())
+        XCTAssertEqual(results.count, 2)
+        XCTAssertTrue(results.allSatisfy { $0.semanticResultJSON == nil })
+        let review = try XCTUnwrap(verification.fetch(FetchDescriptor<SmsReviewCase>()).first)
+        XCTAssertEqual(review.state, .rejected)
     }
 }

@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -8,6 +9,7 @@ struct TransactionDetailView: View {
     @State private var sourceAlert: InboxAlert?
     @State private var showingEdit = false
     @State private var showingDelete = false
+    @State private var isDeleting = false
     @State private var deletionError: String?
 
     var body: some View {
@@ -115,6 +117,8 @@ struct TransactionDetailView: View {
                 Button("Delete Transaction", role: .destructive) {
                     showingDelete = true
                 }
+                .disabled(isDeleting)
+                .accessibilityIdentifier("delete-transaction-button")
             }
         }
         .navigationTitle(transaction.reviewState == .needsReview ? "Review Transaction" : "Transaction")
@@ -153,18 +157,19 @@ struct TransactionDetailView: View {
     }
 
     private func deleteTransaction() {
-        do {
-            if let persistedSourceAlert = try fetchSourceAlert() {
-                persistedSourceAlert.transactionID = nil
-                persistedSourceAlert.status = .needsReview
-                persistedSourceAlert.updatedAt = .now
+        guard !isDeleting else { return }
+        isDeleting = true
+        let transactionID = transaction.id
+        let container = modelContext.container
+        Task { @MainActor in
+            defer { isDeleting = false }
+            do {
+                _ = try await SmsProcessingStore.shared(for: container)
+                    .deleteTransaction(transactionID: transactionID)
+                dismiss()
+            } catch {
+                deletionError = "The change could not be saved. Your transaction is still available."
             }
-            modelContext.delete(transaction)
-            try modelContext.save()
-            dismiss()
-        } catch {
-            modelContext.rollback()
-            deletionError = "The change could not be saved. Your transaction is still available."
         }
     }
 
@@ -334,7 +339,7 @@ private struct TransactionEditView: View {
             Task { @MainActor in
                 defer { isSaving = false }
                 do {
-                    _ = try await SmsProcessingStore(modelContainer: container)
+                    _ = try await SmsProcessingStore.shared(for: container)
                         .editTransactionProjection(command)
                     dismiss()
                 } catch {

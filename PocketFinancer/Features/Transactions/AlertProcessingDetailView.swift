@@ -1,9 +1,11 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
 struct AlertProcessingDetailView: View {
     @Bindable var alert: InboxAlert
     var transaction: Transaction?
+    var showReviewLink = true
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -129,11 +131,12 @@ struct AlertProcessingDetailView: View {
 
     @ViewBuilder
     private var reviewSection: some View {
-        if let reviewCase {
+        if showReviewLink, let reviewCase, reviewCase.state == .open || reviewCase.state == .draft {
             Section("Action needed") {
                 NavigationLink {
                     ReviewCorrectionView(
                         reviewCase: reviewCase,
+                        sourceAlert: alert,
                         onFinished: { dismiss() }
                     )
                 } label: {

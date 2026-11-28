@@ -61,7 +61,8 @@ nonisolated enum SmsProcessingJSON {
         account: [String: Any]?,
         duplicate: [String: Any]?,
         gate: [String: Any]?,
-        reasons: [String]
+        reasons: [String],
+        retainedEvidence: [String: Any]? = nil
     ) throws -> String {
         let semantic: Any
         if let transaction = extraction?.transaction {
@@ -87,7 +88,7 @@ nonisolated enum SmsProcessingJSON {
             semantic = NSNull()
         }
         let recognitionDecision: Any = extraction?.decision.rawValue ?? NSNull()
-        return try canonical([
+        var document: [String: Any] = [
             "contract": "pocketfinancer.processing-result/3",
             "status": status,
             "recognition_decision": recognitionDecision,
@@ -101,7 +102,11 @@ nonisolated enum SmsProcessingJSON {
             "duplicate_assessment": (duplicate as Any?) ?? NSNull(),
             "automatic_persistence": (gate as Any?) ?? NSNull(),
             "reason_codes": reasons,
-        ])
+        ]
+        if let retainedEvidence {
+            document["retained_evidence"] = retainedEvidence
+        }
+        return try canonical(document)
     }
 
     static func account(
@@ -249,29 +254,6 @@ nonisolated enum SmsProcessingJSON {
             extractor["wire_transport"] as? String == "apple_fm_guided_flat",
             extractor["grammar_enabled"] as? Bool == false,
             extractor["grammar_sha256"] is NSNull
-        else { return false }
-        return true
-    }
-
-    static func legacyV4ConfigurationMatches(
-        configurationJSON: String,
-        configurationHash: String
-    ) -> Bool {
-        guard
-            var value = try? JSONSerialization.jsonObject(
-                with: Data(configurationJSON.utf8)
-            ) as? [String: Any],
-            value.removeValue(forKey: "config_hash") as? String == configurationHash,
-            let payload = try? canonical(value),
-            CanonicalJSON.sha256(payload) == configurationHash,
-            let document = try? canonical(
-                value.merging(["config_hash": configurationHash]) { _, new in new }
-            ),
-            document == configurationJSON,
-            value["contract"] as? String == "pocketfinancer.processing-config/4",
-            let extractor = value["extractor"] as? [String: Any],
-            extractor["model_identity_kind"] as? String == "system_managed_runtime",
-            extractor["model_file_sha256"] is NSNull
         else { return false }
         return true
     }

@@ -33,17 +33,30 @@ enum StructuralClauseSegmenter {
     }
 
     nonisolated static func evidence(source: String, utf16Range: NSRange) -> SmsEvidenceSpan? {
-        guard let range = Range(utf16Range, in: source) else { return nil }
-        let startCharacter = source[..<range.lowerBound].unicodeScalars.count
-        let endCharacter = source[..<range.upperBound].unicodeScalars.count
-        let startUTF8 = source[..<range.lowerBound].utf8.count
-        let endUTF8 = source[..<range.upperBound].utf8.count
+        guard
+            utf16Range.location >= 0,
+            utf16Range.length >= 0,
+            utf16Range.location <= source.utf16.count,
+            utf16Range.length <= source.utf16.count - utf16Range.location
+        else { return nil }
+        let utf16 = source.utf16
+        let utf16Start = utf16.index(utf16.startIndex, offsetBy: utf16Range.location)
+        let utf16End = utf16.index(utf16Start, offsetBy: utf16Range.length)
+        let scalars = source.unicodeScalars
+        guard
+            let lower = utf16Start.samePosition(in: scalars),
+            let upper = utf16End.samePosition(in: scalars)
+        else { return nil }
+        let startCharacter = scalars.distance(from: scalars.startIndex, to: lower)
+        let endCharacter = scalars.distance(from: scalars.startIndex, to: upper)
+        let startUTF8 = source.utf8.distance(from: source.utf8.startIndex, to: lower)
+        let endUTF8 = source.utf8.distance(from: source.utf8.startIndex, to: upper)
         return SmsEvidenceSpan(
             startCharacter: startCharacter,
             endCharacter: endCharacter,
             startUTF8: startUTF8,
             endUTF8: endUTF8,
-            text: String(source[range])
+            text: String(scalars[lower..<upper])
         )
     }
 

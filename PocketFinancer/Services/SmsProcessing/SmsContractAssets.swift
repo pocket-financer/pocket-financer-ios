@@ -53,7 +53,79 @@ nonisolated enum SmsContractAssets {
         "profiles/persistence-policy.json",
     ]
 
+    private static let cache = AssetCache()
+
+    static var mainBundleVerificationCountForTesting: Int {
+        cache.mainBundleVerificationCount
+    }
+
+    static func resetCacheForTesting() {
+        cache.reset()
+    }
+
     static func verify(in hostBundle: Bundle = .main) throws -> SmsContractBundle {
+        try cache.verifiedBundle(for: hostBundle) {
+            try verifyUncached(in: hostBundle)
+        }
+    }
+
+    static func extractorPrompt(in hostBundle: Bundle = .main) throws -> String {
+        try cache.extractorPrompt(for: hostBundle) {
+            _ = try verify(in: hostBundle)
+            return try loadText(forRelativePath: "prompts/apple-fm-sms-extractor.txt", in: hostBundle)
+        }
+    }
+
+    static func appleFlatSchema(in hostBundle: Bundle = .main) throws -> [String: Any] {
+        _ = try verify(in: hostBundle)
+        return try loadJSON(forRelativePath: "schemas/apple-fm-flat.schema.json", in: hostBundle)
+    }
+
+    static func profileJSON(named name: String, in hostBundle: Bundle = .main) throws -> [String: Any] {
+        _ = try verify(in: hostBundle)
+        return try loadJSON(forRelativePath: "profiles/\(name).json", in: hostBundle)
+    }
+
+    static func currentISO4217CurrencyCodes(in hostBundle: Bundle = .main) throws -> Set<String> {
+        try cache.iso4217CurrencyCodes(for: hostBundle) {
+            let currency = try profileJSON(named: "currency", in: hostBundle)
+            guard let codes = currency["current_codes"] as? [String], !codes.isEmpty else {
+                throw SmsContractAssetError.configurationIntegrityFailure
+            }
+            return Set(codes.map { $0.uppercased() })
+        }
+    }
+
+    static func loadData(forRelativePath relativePath: String, in hostBundle: Bundle = .main) throws -> Data {
+        guard isSafeRelativePath(relativePath),
+            let url = resourceURL(forRelativePath: relativePath, in: hostBundle),
+            let data = try? Data(contentsOf: url)
+        else {
+            throw SmsContractAssetError.configurationIntegrityFailure
+        }
+        return data
+    }
+
+    static func loadText(forRelativePath relativePath: String, in hostBundle: Bundle = .main) throws -> String {
+        let data = try loadData(forRelativePath: relativePath, in: hostBundle)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw SmsContractAssetError.configurationIntegrityFailure
+        }
+        return text
+    }
+
+    static func loadJSON(
+        forRelativePath relativePath: String,
+        in hostBundle: Bundle = .main
+    ) throws -> [String: Any] {
+        let data = try loadData(forRelativePath: relativePath, in: hostBundle)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SmsContractAssetError.configurationIntegrityFailure
+        }
+        return object
+    }
+
+    private static func verifyUncached(in hostBundle: Bundle) throws -> SmsContractBundle {
         let manifestData = try loadData(forRelativePath: "release-manifest.json", in: hostBundle)
         let manifestDigest = sha256(manifestData)
         let manifest: Manifest
@@ -117,58 +189,6 @@ nonisolated enum SmsContractAssets {
         )
     }
 
-    static func extractorPrompt(in hostBundle: Bundle = .main) throws -> String {
-        _ = try verify(in: hostBundle)
-        return try loadText(forRelativePath: "prompts/apple-fm-sms-extractor.txt", in: hostBundle)
-    }
-
-    static func appleFlatSchema(in hostBundle: Bundle = .main) throws -> [String: Any] {
-        _ = try verify(in: hostBundle)
-        return try loadJSON(forRelativePath: "schemas/apple-fm-flat.schema.json", in: hostBundle)
-    }
-
-    static func profileJSON(named name: String, in hostBundle: Bundle = .main) throws -> [String: Any] {
-        _ = try verify(in: hostBundle)
-        return try loadJSON(forRelativePath: "profiles/\(name).json", in: hostBundle)
-    }
-
-    static func currentISO4217CurrencyCodes(in hostBundle: Bundle = .main) throws -> Set<String> {
-        let currency = try profileJSON(named: "currency", in: hostBundle)
-        guard let codes = currency["current_codes"] as? [String], !codes.isEmpty else {
-            throw SmsContractAssetError.configurationIntegrityFailure
-        }
-        return Set(codes.map { $0.uppercased() })
-    }
-
-    static func loadData(forRelativePath relativePath: String, in hostBundle: Bundle = .main) throws -> Data {
-        guard isSafeRelativePath(relativePath),
-            let url = resourceURL(forRelativePath: relativePath, in: hostBundle),
-            let data = try? Data(contentsOf: url)
-        else {
-            throw SmsContractAssetError.configurationIntegrityFailure
-        }
-        return data
-    }
-
-    static func loadText(forRelativePath relativePath: String, in hostBundle: Bundle = .main) throws -> String {
-        let data = try loadData(forRelativePath: relativePath, in: hostBundle)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw SmsContractAssetError.configurationIntegrityFailure
-        }
-        return text
-    }
-
-    static func loadJSON(
-        forRelativePath relativePath: String,
-        in hostBundle: Bundle = .main
-    ) throws -> [String: Any] {
-        let data = try loadData(forRelativePath: relativePath, in: hostBundle)
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw SmsContractAssetError.configurationIntegrityFailure
-        }
-        return object
-    }
-
     private static func resourceURL(forRelativePath relativePath: String, in hostBundle: Bundle) -> URL? {
         let nsPath = relativePath as NSString
         let directory = nsPath.deletingLastPathComponent
@@ -206,6 +226,85 @@ nonisolated enum SmsContractAssets {
 
     private static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private final class AssetCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var mainBundle: SmsContractBundle?
+        private var mainPrompt: String?
+        private var mainCurrencyCodes: Set<String>?
+        private var verificationCount = 0
+
+        var mainBundleVerificationCount: Int {
+            lock.withLock { verificationCount }
+        }
+
+        func reset() {
+            lock.withLock {
+                mainBundle = nil
+                mainPrompt = nil
+                mainCurrencyCodes = nil
+                verificationCount = 0
+            }
+        }
+
+        func verifiedBundle(
+            for hostBundle: Bundle,
+            compute: () throws -> SmsContractBundle
+        ) throws -> SmsContractBundle {
+            guard hostBundle === Bundle.main else {
+                return try compute()
+            }
+            return try lock.withLock {
+                if let cached = mainBundle {
+                    return cached
+                }
+                let verified = try compute()
+                mainBundle = verified
+                verificationCount += 1
+                return verified
+            }
+        }
+
+        func extractorPrompt(
+            for hostBundle: Bundle,
+            compute: () throws -> String
+        ) throws -> String {
+            guard hostBundle === Bundle.main else {
+                return try compute()
+            }
+            if let cached = lock.withLock({ mainPrompt }) {
+                return cached
+            }
+            let prompt = try compute()
+            return lock.withLock {
+                if let cached = mainPrompt {
+                    return cached
+                }
+                mainPrompt = prompt
+                return prompt
+            }
+        }
+
+        func iso4217CurrencyCodes(
+            for hostBundle: Bundle,
+            compute: () throws -> Set<String>
+        ) throws -> Set<String> {
+            guard hostBundle === Bundle.main else {
+                return try compute()
+            }
+            if let cached = lock.withLock({ mainCurrencyCodes }) {
+                return cached
+            }
+            let codes = try compute()
+            return lock.withLock {
+                if let cached = mainCurrencyCodes {
+                    return cached
+                }
+                mainCurrencyCodes = codes
+                return codes
+            }
+        }
     }
 
     private struct Manifest: Decodable {

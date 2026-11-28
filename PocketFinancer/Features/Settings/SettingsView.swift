@@ -5,7 +5,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppPreferenceKey.completedOnboarding) private var completedOnboarding = true
-    @State private var primaryCurrency = PrimaryCurrencySettings.currentCode
+    @PrimaryCurrencyState private var primaryCurrencyState
+    @State private var selectedPrimaryCurrency = PrimaryCurrencySettings.currentCode
     @Query private var alerts: [InboxAlert]
     @State private var retrying = false
     @State private var testingModel = false
@@ -27,18 +28,36 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Money and locale") {
-                    Picker("Primary currency", selection: $primaryCurrency) {
+                    if !primaryCurrencyState.isConfirmed {
+                        Label(
+                            "Alert processing is paused until you confirm a primary currency.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    }
+
+                    Picker("Primary currency", selection: $selectedPrimaryCurrency) {
                         ForEach(PrimaryCurrencySettings.supportedCodes, id: \.self) { code in
                             Text(code).tag(code)
                         }
                     }
-                    Button("Confirm \(primaryCurrency) as Primary Currency") {
-                        PrimaryCurrencySettings.confirm(primaryCurrency)
-                        resultMessage = "Primary currency confirmed for future alert processing."
+
+                    Button("Confirm \(selectedPrimaryCurrency) as Primary Currency") {
+                        let waitingAlerts = diagnostics.pending
+                        PrimaryCurrencySettings.confirm(selectedPrimaryCurrency)
+                        resultMessage =
+                            waitingAlerts > 0
+                            ? "Primary currency confirmed as \(selectedPrimaryCurrency). "
+                                + "Waiting alerts are now being processed locally."
+                            : "Primary currency confirmed as \(selectedPrimaryCurrency) for future alert processing."
                     }
-                    .disabled(PrimaryCurrencySettings.confirmedCode == primaryCurrency)
+                    .disabled(primaryCurrencyState.confirmedCode == selectedPrimaryCurrency)
+                    .accessibilityIdentifier("settings-confirm-primary-currency")
+
                     Text(
-                        "This is used only when a message has no explicit currency. Each processing attempt stores its own immutable setting snapshot."
+                        "This is used only when a message has no explicit currency. "
+                            + "Each processing attempt stores its own immutable setting snapshot."
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -65,6 +84,7 @@ struct SettingsView: View {
                         Label(retrying ? "Retrying…" : "Retry Saved Alerts", systemImage: "arrow.clockwise")
                     }
                     .disabled(retrying || (diagnostics.pending == 0 && diagnostics.needsReview == 0))
+                    .accessibilityIdentifier("retry-saved-alerts")
                 }
 
                 Section("Shortcuts ingestion") {
@@ -124,6 +144,12 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .onAppear {
+                selectedPrimaryCurrency = primaryCurrencyState.currentCode
+            }
+            .onChange(of: primaryCurrencyState.currentCode) { _, newValue in
+                selectedPrimaryCurrency = newValue
+            }
             .confirmationDialog(
                 "Erase every local record?",
                 isPresented: $showingEraseConfirmation,
@@ -157,18 +183,43 @@ struct SettingsView: View {
     }
 
     private func retrySavedAlerts() async {
-        guard PrimaryCurrencySettings.confirmedCode != nil else {
+        guard primaryCurrencyState.confirmedCode != nil else {
             resultMessage = "Confirm a primary currency before processing saved alerts."
             return
         }
         retrying = true
         defer { retrying = false }
+        let before = LocalDataService(context: modelContext).diagnostics()
         let service = AlertIngestionService(context: modelContext)
-        let completed = await service.processPending(limit: 20, includeNeedsReview: true)
-        resultMessage =
-            completed == 0
-            ? "No alert could be completed. Check the model status and try again later."
-            : "Retried \(completed) saved alert\(completed == 1 ? "" : "s") locally."
+        let retried = await service.processPending(limit: 20, includeNeedsReview: true)
+        let after = LocalDataService(context: modelContext).diagnostics()
+        resultMessage = Self.retryStatusMessage(retried: retried, before: before, after: after)
+    }
+
+    nonisolated static func retryStatusMessage(
+        retried: Int,
+        before: StorageDiagnostic,
+        after: StorageDiagnostic
+    ) -> String {
+        guard retried > 0 else {
+            return "No saved alerts could be retried right now. "
+                + "Check the on-device model status or review them directly in Transactions."
+        }
+        var parts = ["Retried \(retried) saved alert\(retried == 1 ? "" : "s") locally."]
+        let newlyImported = max(0, after.imported - before.imported)
+        let newlyRejected = max(0, after.rejected - before.rejected)
+        if newlyImported > 0 {
+            parts.append("\(newlyImported) imported.")
+        }
+        if newlyRejected > 0 {
+            let noun = newlyRejected == 1 ? "non-transaction" : "non-transactions"
+            parts.append("\(newlyRejected) cleared as \(noun).")
+        }
+        if after.needsReview > 0 {
+            let verb = after.needsReview == 1 ? "needs" : "need"
+            parts.append("\(after.needsReview) still \(verb) review.")
+        }
+        return parts.joined(separator: " ")
     }
 
     private func runModelSelfTest() async {
@@ -213,8 +264,7 @@ struct AutomationSetupView: View {
                 AutomationStep(number: 1, text: "Open Shortcuts and tap the Automation tab at the bottom.")
                 AutomationStep(
                     number: 2,
-                    text:
-                        "Tap Automation at the bottom. Tap New Automation, or + if you already have one, then choose Message under Communication."
+                    text: "Tap New Automation, or + if you already have one, then choose Message under Communication."
                 )
                 AutomationStep(
                     number: 3,
@@ -236,7 +286,7 @@ struct AutomationSetupView: View {
                     text: "Confirm the action reads Import transaction alert from Content, then tap Done."
                 )
             } header: {
-                Text("iOS 27 Message automation")
+                Text("Message automation")
             } footer: {
                 Text(
                     "Start with one synthetic incoming message. The app uses the time it receives the alert when the Message trigger has no date field."
@@ -245,7 +295,7 @@ struct AutomationSetupView: View {
 
             Section("Sender-independent coverage") {
                 Text(
-                    "After the first test works, make three otherwise identical Message automations: Message Contains Rs, INR, and ₹. Do not add a Sender condition. Pocket Financer rejects non-transactions locally and deduplicates overlapping matches."
+                    "After the first test works, add Message automations for the currency markers your bank alerts use (for example Rs, INR, and ₹, or $, USD, and EUR). Do not add a Sender condition. Pocket Financer filters non-transactions locally and deduplicates overlapping matches."
                 )
             }
 
@@ -256,12 +306,6 @@ struct AutomationSetupView: View {
                 Link(destination: URL(string: "shortcuts://")!) {
                     Label("Launch Shortcuts", systemImage: "arrow.up.forward.app")
                 }
-            }
-
-            Section("iOS 27 beta experiment") {
-                Text(
-                    "You may also test the notification automation with selected apps and keyword filters. Treat its Messages support and payload shape as experimental until Apple documents the stable behavior."
-                )
             }
 
             Section("Synthetic test alert") {
@@ -286,9 +330,15 @@ private struct PrivacyDetailsView: View {
                 Label("No CloudKit transaction sync", systemImage: "icloud.slash")
             }
 
-            Section("Evidence") {
+            Section("Automatic saving and review") {
                 Text(
-                    "Accepted alerts remain locally attached to the imported transaction so you can audit a model extraction. Deterministically rejected OTP, verification, promotional, collect-request, and duplicate bodies are cleared. Model-only rejections remain available for your review."
+                    "Valid transaction alerts for accounts you have already confirmed are saved automatically on this iPhone. Alerts with unrecognized or ambiguous accounts, possible duplicates within 5 minutes, or incomplete extractions wait in Needs Review until you confirm or reject them."
+                )
+            }
+
+            Section("Evidence and tombstones") {
+                Text(
+                    "Confirmed transactions keep their local alert evidence attached so you can audit extractions. Alerts excluded by the local prefilter, classified as non-transactions by the model, or rejected by you in Review erase their raw message body, sender, and model artifacts into body-free tombstones."
                 )
             }
 

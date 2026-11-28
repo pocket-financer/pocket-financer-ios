@@ -1,9 +1,13 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
 struct TransactionsView: View {
     @Query(sort: \Transaction.occurredAt, order: .reverse) private var transactions: [Transaction]
     @Query(sort: \InboxAlert.createdAt, order: .reverse) private var alerts: [InboxAlert]
+    @Query(sort: \SmsReviewCase.updatedAt, order: .reverse) private var reviewCases: [SmsReviewCase]
+    @Query(sort: \SmsReconstructedResult.createdAt, order: .reverse)
+    private var reconstructedResults: [SmsReconstructedResult]
     @State private var searchText = ""
     @State private var showingManualImport = false
 
@@ -20,7 +24,6 @@ struct TransactionsView: View {
     }
 
     private var reviewAlerts: [InboxAlert] {
-        guard searchText.isEmpty else { return [] }
         let representedTransactionIDs = Set(
             transactions
                 .filter { $0.reviewState == .needsReview }
@@ -28,8 +31,12 @@ struct TransactionsView: View {
         )
         return alerts.filter { alert in
             let hasRepresentedTransaction = alert.transactionID.map(representedTransactionIDs.contains) ?? false
-            return alert.status == .needsReview
-                && !hasRepresentedTransaction
+            guard alert.status == .needsReview && !hasRepresentedTransaction else { return false }
+            guard !searchText.isEmpty else { return true }
+            let preview = reviewPreview(for: alert)
+            return alert.sender.localizedCaseInsensitiveContains(searchText)
+                || (preview.counterparty?.localizedCaseInsensitiveContains(searchText) ?? false)
+                || (preview.accountReference?.localizedCaseInsensitiveContains(searchText) ?? false)
         }
     }
 
@@ -81,11 +88,23 @@ struct TransactionsView: View {
                                 }
 
                                 ForEach(reviewAlerts) { alert in
+                                    let reviewCase = activeReviewCase(for: alert)
+                                    let preview = reviewPreview(for: alert, reviewCase: reviewCase)
                                     NavigationLink {
-                                        AlertProcessingDetailView(alert: alert)
+                                        if let reviewCase {
+                                            ReviewCorrectionView(
+                                                reviewCase: reviewCase,
+                                                sourceAlert: alert
+                                            )
+                                        } else {
+                                            AlertProcessingDetailView(alert: alert)
+                                        }
                                     } label: {
-                                        AlertQueueRow(alert: alert)
+                                        NeedsReviewAlertRow(alert: alert, preview: preview)
                                     }
+                                    .accessibilityIdentifier(
+                                        "needs-review-alert-\(alert.id.uuidString.lowercased())"
+                                    )
                                 }
                             }
                         }
@@ -128,6 +147,195 @@ struct TransactionsView: View {
             || transaction.merchant.localizedCaseInsensitiveContains(searchText)
             || (transaction.accountLabel?.localizedCaseInsensitiveContains(searchText) ?? false)
     }
+
+    private func activeReviewCase(for alert: InboxAlert) -> SmsReviewCase? {
+        let matching = reviewCases.filter { $0.sourceAlertID == alert.id }
+        if let openOrDraft = matching.first(where: { $0.state == .open || $0.state == .draft }) {
+            return openOrDraft
+        }
+        return matching.first(where: { $0.state == .waitingRetry })
+    }
+
+    private func reviewPreview(
+        for alert: InboxAlert,
+        reviewCase: SmsReviewCase? = nil
+    ) -> NeedsReviewPreview {
+        let resolvedCase = reviewCase ?? activeReviewCase(for: alert)
+        let resultJSON = resolvedCase.flatMap { review in
+            reconstructedResults.first { $0.operationID == review.currentOperationID }?.semanticResultJSON
+        }
+        let reasonCodes =
+            resolvedCase?.reasonCodesRawValue
+            .split(separator: "\n")
+            .map(String.init) ?? []
+        return NeedsReviewPreview.build(
+            alert: alert,
+            resultJSON: resultJSON,
+            reasonCodes: reasonCodes
+        )
+    }
+}
+
+private struct NeedsReviewPreview {
+    let headline: String
+    let subtitle: String
+    let amountText: String?
+    let direction: String?
+    let counterparty: String?
+    let accountReference: String?
+    let reasonTitle: String
+    let isDuplicateWarning: Bool
+
+    static func build(
+        alert: InboxAlert,
+        resultJSON: String?,
+        reasonCodes: [String]
+    ) -> NeedsReviewPreview {
+        let proposal = SmsReviewProjection.parse(resultJSON: resultJSON, source: alert.rawBody)
+        let retained = SmsReviewProjection.parseRetainedEvidence(
+            resultJSON: resultJSON,
+            analysisJSON: nil,
+            operationConfigurationJSON: nil,
+            source: alert.rawBody,
+            fallbackPrimaryCurrency: PrimaryCurrencySettings.currentCode,
+            fallbackReceiptTimestamp: alert.receivedAt,
+            fallbackReceiptProvenance: "platform_received"
+        )
+
+        let amountMinorUnits = proposal?.amountMinorUnits ?? retained.slmFields[.amount]?.normalizedAmount?.minorUnits
+        let currency = proposal?.currency ?? retained.slmFields[.amount]?.normalizedAmount?.currency
+        let amountText: String? =
+            if let amountMinorUnits, let currency {
+                CurrencyFormatter.string(minorUnits: amountMinorUnits, currencyCode: currency)
+            } else {
+                nil
+            }
+
+        let direction = proposal?.direction ?? retained.slmFields[.direction]?.normalizedDirection?.rawValue
+        let counterparty = proposal?.counterparty ?? retained.slmFields[.counterparty]?.normalizedCounterparty
+        let accountReference = proposal?.accountReference ?? retained.slmFields[.account]?.normalizedAccount
+        let trimmedSender = alert.sender.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let headline: String
+        if let counterparty, !counterparty.isEmpty {
+            headline = counterparty
+        } else if !trimmedSender.isEmpty {
+            headline = trimmedSender
+        } else {
+            headline = "Saved alert"
+        }
+
+        let timestamp = alert.receivedAt.formatted(date: .abbreviated, time: .shortened)
+        let subtitle: String
+        if let counterparty, !counterparty.isEmpty, !trimmedSender.isEmpty {
+            subtitle = "\(trimmedSender) · \(timestamp)"
+        } else if let accountReference, !accountReference.isEmpty {
+            let formattedAccount =
+                accountReference.contains("@")
+                ? accountReference
+                : "••\(accountReference.suffix(4))"
+            subtitle = "\(formattedAccount) · \(timestamp)"
+        } else {
+            subtitle = timestamp
+        }
+
+        let primaryCode = reasonCodes.first ?? alert.lastErrorCode
+        let isDuplicateWarning =
+            proposal?.duplicateStatus == "possible_duplicate"
+            || reasonCodes.contains("duplicate_possible")
+            || alert.lastErrorCode == "duplicate_possible"
+        let reasonTitle = conciseReason(for: primaryCode)
+
+        return NeedsReviewPreview(
+            headline: headline,
+            subtitle: subtitle,
+            amountText: amountText,
+            direction: direction,
+            counterparty: counterparty,
+            accountReference: accountReference,
+            reasonTitle: reasonTitle,
+            isDuplicateWarning: isDuplicateWarning
+        )
+    }
+
+    private static func conciseReason(for code: String?) -> String {
+        guard let code, !code.isEmpty else {
+            return "Tap to review saved alert"
+        }
+        switch code {
+        case "account_resolution_unresolved":
+            return "Confirm account to save"
+        case "account_resolution_ambiguous":
+            return "Choose matching account"
+        case "duplicate_possible":
+            return "Possible duplicate within 5 minutes"
+        case "duplicate_already_persisted":
+            return "Already saved"
+        default:
+            return AlertProcessingDiagnostics.presentation(for: code).title
+        }
+    }
+}
+
+private struct NeedsReviewAlertRow: View {
+    let alert: InboxAlert
+    let preview: NeedsReviewPreview
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(
+                systemName: preview.isDuplicateWarning
+                    ? "doc.on.doc.fill"
+                    : "exclamationmark.bubble.fill"
+            )
+            .foregroundStyle(.orange)
+            .frame(width: 24)
+            .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(preview.headline)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let amountText = preview.amountText {
+                        Text(amountText)
+                            .font(.headline.monospacedDigit())
+                            .foregroundStyle(preview.direction == "credit" ? Color.green : Color.primary)
+                    } else {
+                        Text("Review")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(.orange.opacity(0.14), in: Capsule())
+                    }
+                }
+
+                Text(preview.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(preview.reasonTitle)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        var parts = ["Needs review", preview.headline]
+        if let amountText = preview.amountText {
+            parts.append(amountText)
+        }
+        parts.append(preview.reasonTitle)
+        return parts.joined(separator: ", ")
+    }
 }
 
 private struct ReviewTransactionRow: View {
@@ -168,7 +376,9 @@ private struct ReviewTransactionRow: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "Review required, \(transaction.merchant), \(CurrencyFormatter.string(minorUnits: transaction.amountMinorUnits, currencyCode: transaction.currencyCode)), account \(transaction.accountLabel ?? "unknown"), \(transaction.ownerReviewReason)"
+            "Review required, \(transaction.merchant), "
+                + "\(CurrencyFormatter.string(minorUnits: transaction.amountMinorUnits, currencyCode: transaction.currencyCode)), "
+                + "account \(transaction.accountLabel ?? "unknown"), \(transaction.ownerReviewReason)"
         )
         .accessibilityIdentifier("review-required-transaction-\(transaction.id.uuidString.lowercased())")
     }
@@ -211,48 +421,10 @@ private struct AlertQueueRow: View {
     }
 
     private var detail: String {
-        switch alert.lastErrorCode {
-        case "model_appleIntelligenceNotEnabled":
-            "Enable Apple Intelligence, then retry"
-        case "model_modelNotReady":
-            "Apple's model is still preparing"
-        case "model_assets_unavailable":
-            "Apple's local model assets are not ready"
-        case "model_deviceNotEligible":
-            "This device cannot run the local model"
-        case "model_timed_out":
-            "The local model timed out"
-        case "model_cancelled":
-            "Local processing was interrupted"
-        case "model_rate_limited", "model_concurrent_requests":
-            "The local model is temporarily busy"
-        case "model_unsupported_language":
-            "The alert language is not supported locally"
-        case "model_guardrail_violation", "model_refused":
-            "Apple's local model declined this alert"
-        case "model_unsupported_guide", "model_decoding_failed":
-            "The installed model could not use the extraction schema"
-        case "model_context_window_exceeded":
-            "The alert exceeded the local model context"
-        case "model_generation_failed":
-            "No safe extraction was produced"
-        case "extractor_abstained", "modelRejected":
-            "The model was uncertain; evidence was retained"
-        case "account_resolution_unresolved":
-            "Confirm which local account this used"
-        case "account_resolution_ambiguous":
-            "More than one local account matched"
-        case "duplicate_possible", "duplicate_already_persisted":
-            "Similar recent transaction needs review"
-        case "configuration_integrity":
-            "Pipeline assets failed integrity verification"
-        case "runtime_unavailable":
-            "Local extractor runtime was unavailable"
-        case "runtime_output_truncated":
-            "Model output exceeded token limit"
-        default:
-            "Evidence is retained locally"
+        if let code = alert.lastErrorCode {
+            return AlertProcessingDiagnostics.presentation(for: code).title
         }
+        return "Evidence is retained locally"
     }
 
     var body: some View {

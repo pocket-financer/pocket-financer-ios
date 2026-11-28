@@ -117,7 +117,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testEnqueueDurablyAdmitsEvidenceWithoutStartingSelector() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -146,7 +146,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testIngestAutoSavesForConfirmedAccountAndRoutesFiveMinuteDuplicateToReview() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let account = Account(
             name: "HDFC Checking",
@@ -210,7 +210,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testGroundedProcessingCreatesReviewTraceAndConfirmReplaysIdempotently() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let service = AlertIngestionService(
             context: context,
@@ -290,7 +290,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testStandaloneOtpIsTombstonedByPrefilterWithoutInvokingExtractor() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -327,7 +327,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testNonTransactionCardAlertIsTombstonedByExtractorNone() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -358,54 +358,119 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertEqual(operation.retentionState, "tombstoned_none")
     }
 
-    func testShortWindowDeduplicationIsSenderIndependentNormalizesLineEndingsAndPreservesEvidence() async throws {
+    func testExactSourceIdentityDeduplicatesIdempotentlyAndDistinctAlertsEnterPrefilterPipeline() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
-        let service = AlertIngestionService(context: context)
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
 
         let first = try service.enqueue(
-            body: "HDFC Bank:\r\nRs.500.00 debited from a/c XXXXXX0000.",
+            body: "HDFC Bank:\nRs.500.00 debited from a/c XXXXXX0000.",
             sender: "AX-HDFCBK",
             receivedAt: TestFixtures.receivedAt,
             sourceApplication: "Messages",
             origin: .shortcut
         )
-        let duplicate = try service.enqueue(
-            body: "HDFC Bank:\nRs.500.00 debited from a/c XXXXXX0000. ",
-            sender: "+919999999999",
+        let exactReplay = try service.enqueue(
+            body: "HDFC Bank:\nRs.500.00 debited from a/c XXXXXX0000.",
+            sender: "AX-HDFCBK",
+            receivedAt: TestFixtures.receivedAt,
+            sourceApplication: "Messages",
+            origin: .shortcut
+        )
+        XCTAssertEqual(first.disposition, .queued)
+        XCTAssertEqual(exactReplay.alertID, first.alertID)
+        XCTAssertEqual(exactReplay.disposition, .queued)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<InboxAlert>()).count, 1)
+
+        // Two distinct OTP alerts 2 seconds apart must both pass through prefilter into tombstones
+        // rather than getting trapped in Needs Review by a pre-prefilter heuristic (PAR-11).
+        let firstOTP = try await service.ingest(
+            body: "Your OTP is 123456. Do not share it.",
+            sender: "BANK",
+            receivedAt: TestFixtures.receivedAt,
+            sourceApplication: "Messages",
+            origin: .shortcut
+        )
+        let secondOTP = try await service.ingest(
+            body: "Your OTP is 123456. Do not share it.",
+            sender: "BANK",
             receivedAt: TestFixtures.receivedAt.addingTimeInterval(2),
             sourceApplication: "Messages",
             origin: .shortcut
         )
-        let laterDistinct = try service.enqueue(
-            body: "HDFC Bank:\nRs.500.00 debited from a/c XXXXXX0000.",
-            sender: "AX-HDFCBK",
-            receivedAt: TestFixtures.receivedAt.addingTimeInterval(AlertIngestionService.duplicateWindow + 5),
+        XCTAssertEqual(firstOTP.disposition, .rejected)
+        XCTAssertEqual(secondOTP.disposition, .rejected)
+        XCTAssertNotEqual(firstOTP.alertID, secondOTP.alertID)
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testTombstonedReplaySuppressesDuplicateAdmissionAndModelWork() async throws {
+        let restore = TestFixtures.usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try TestFixtures.makeInMemoryDatabase()
+        let context = database.container.mainContext
+        let probe = IngestionSelectorProbe()
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(probe: probe),
+            extractorEligibilityOverride: true
+        )
+
+        let otpBody = "Your OTP is 654321. Do not share it."
+        let firstOTP = try await service.ingest(
+            body: otpBody,
+            sender: "BANK",
+            receivedAt: TestFixtures.receivedAt,
             sourceApplication: "Messages",
             origin: .shortcut
         )
-
-        XCTAssertEqual(first.disposition, .queued)
-        XCTAssertEqual(duplicate.disposition, .duplicate)
-        XCTAssertEqual(laterDistinct.disposition, .queued)
-        let alerts = try context.fetch(
-            FetchDescriptor<InboxAlert>(sortBy: [SortDescriptor(\.receivedAt)])
+        let replayOTP = try await service.ingest(
+            body: otpBody,
+            sender: "BANK",
+            receivedAt: TestFixtures.receivedAt,
+            sourceApplication: "Messages",
+            origin: .shortcut
         )
-        XCTAssertEqual(alerts.count, 3)
-        XCTAssertEqual(alerts[1].status, .needsReview)
-        XCTAssertEqual(alerts[1].duplicateOfAlertID, alerts[0].id)
-        XCTAssertEqual(alerts[1].lastErrorCode, "possible_duplicate_heuristic_match")
-        XCTAssertNil(alerts[2].duplicateOfAlertID)
-        XCTAssertTrue(alerts.allSatisfy { !$0.rawBody.isEmpty })
-        await Task.yield()
+        XCTAssertEqual(firstOTP.disposition, .rejected)
+        XCTAssertEqual(replayOTP.alertID, firstOTP.alertID)
+        XCTAssertEqual(replayOTP.disposition, .rejected)
+
+        let statementBody = "Your card statement summary for INR 100.00 is ready."
+        let firstNone = try await service.ingest(
+            body: statementBody,
+            sender: "BANK",
+            receivedAt: TestFixtures.receivedAt.addingTimeInterval(30),
+            sourceApplication: "Messages",
+            origin: .shortcut
+        )
+        let replayNone = try await service.ingest(
+            body: statementBody,
+            sender: "BANK",
+            receivedAt: TestFixtures.receivedAt.addingTimeInterval(30),
+            sourceApplication: "Messages",
+            origin: .shortcut
+        )
+        XCTAssertEqual(firstNone.disposition, .rejected)
+        XCTAssertEqual(replayNone.alertID, firstNone.alertID)
+        XCTAssertEqual(replayNone.disposition, .rejected)
+
+        let calls = await probe.callCount
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<InboxAlert>()).count, 2)
     }
 
     func testMissingConfirmedCurrencyLeavesAlertQueuedWithoutOperation() async throws {
         let restore = TestFixtures.usePrimaryCurrency(nil)
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let service = AlertIngestionService(
             context: context,
@@ -430,7 +495,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testCancellationCannotWriteLedgerAndRetainsDurableEvidence() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -461,7 +526,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testRetryCreatesLinkedOperationReusesReviewCaseAndValidatesInputs() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let service = AlertIngestionService(
             context: context,
@@ -513,7 +578,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testOriginalRetryNeverSilentlyUpgradesFrozenV1Operation() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let service = AlertIngestionService(
             context: context,
@@ -557,9 +622,13 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testAutomaticAttemptLimitStopsBeforeCreatingOperation() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
-        let service = AlertIngestionService(context: context)
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(),
+            extractorEligibilityOverride: true
+        )
         let receipt = try service.enqueue(
             body: TestFixtures.validBody,
             sender: "BANK",
@@ -572,17 +641,21 @@ final class AlertIngestionServiceTests: XCTestCase {
         try context.save()
 
         let processed = await service.processPending()
-        XCTAssertEqual(processed, 1)
+        XCTAssertEqual(processed, 0)
         XCTAssertEqual(alert.status, .needsReview)
         XCTAssertEqual(alert.lastErrorCode, "automatic_retry_limit_reached")
         XCTAssertTrue(try context.fetch(FetchDescriptor<SmsProcessingOperation>()).isEmpty)
         XCTAssertEqual(receipt.alertID, alert.id)
     }
 
-    func testOversizedBodySenderAndSourceApplicationAreRejectedBeforeAdmission() throws {
-        let database = try AppDatabase(inMemory: true)
+    func testOversizedBodySenderAndSourceApplicationAreRejectedBeforeAdmission() async throws {
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
-        let service = AlertIngestionService(context: context)
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(),
+            extractorEligibilityOverride: true
+        )
 
         let oversizedCases: [(body: String, sender: String?, sourceApp: String?)] = [
             (
@@ -620,7 +693,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testPendingRecoveryReusesSettledReviewBeforeSettingsAndAttemptLimit() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -664,7 +737,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testReadyRecoveryDefersFrozenWorkAndOnlyOwnerRetryCreatesChild() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -722,7 +795,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testLiveDurableClaimBlocksRecoveryAndOwnerRetryAcrossContexts() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -759,7 +832,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testExpiredWorkUsesExistingRecoveryWithoutAnotherExtraction() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -783,21 +856,27 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertEqual(beforeRecovery.disposition, .processingIncomplete)
         let recoveredIDs = try await store.recoverExpiredOperations()
         XCTAssertEqual(recoveredIDs.count, 1)
-        _ = await service.processPending(includeNeedsReview: true)
+        let automaticCount = await service.processPending()
+        XCTAssertEqual(automaticCount, 0)
 
         let fresh = ModelContext(database.container)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 1)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsReviewCase>()).map(\.id), recoveredIDs)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<InboxAlert>()).first?.status, .needsReview)
         XCTAssertTrue(try fresh.fetch(FetchDescriptor<Transaction>()).isEmpty)
-        let calls = await probe.callCount
-        XCTAssertEqual(calls, 0)
+        let callsBeforeOwnerRetry = await probe.callCount
+        XCTAssertEqual(callsBeforeOwnerRetry, 0)
+
+        let ownerRetryCount = await service.processPending(includeNeedsReview: true)
+        XCTAssertEqual(ownerRetryCount, 1)
+        let callsAfterOwnerRetry = await probe.callCount
+        XCTAssertEqual(callsAfterOwnerRetry, 1)
     }
 
     func testOwnerRetryWithoutParentLinksLatestReviewAndRetainsOneCase() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -810,7 +889,8 @@ final class AlertIngestionServiceTests: XCTestCase {
         let parent = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first)
         let reviewID = try XCTUnwrap(context.fetch(FetchDescriptor<SmsReviewCase>()).first?.id)
 
-        _ = await service.processPending(includeNeedsReview: true)
+        let automaticDrainCount = await service.processPending()
+        XCTAssertEqual(automaticDrainCount, 0)
         let receipt = try await service.retry(alertID: queued.alertID)
 
         XCTAssertEqual(receipt.disposition, .needsReview)
@@ -828,7 +908,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     }
 
     func testAdmissionLockIsNonblockingAndReleasedAfterFailure() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         XCTAssertThrowsError(
             try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in
                 try SmsProcessingStore.withAdmissionLock(container: database.container) { _ in }
@@ -879,7 +959,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testUncommittedEvidenceConflictCannotOverwriteDurableAlertOrStartModel() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         context.autosaveEnabled = false
         let probe = IngestionSelectorProbe()
@@ -904,10 +984,10 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertEqual(calls, 0)
     }
 
-    func testUnavailableModelOutcomeIsReusedUntilExplicitOwnerRetry() async throws {
+    func testUnavailableModelOutcomeIsReusedByAutomaticDrainAndRetriedBySettingsRetry() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let unavailable = AlertIngestionService(
@@ -915,7 +995,7 @@ final class AlertIngestionServiceTests: XCTestCase {
             smsExtractor: GroundedIngestionExtractor(probe: probe),
             extractorEligibilityOverride: false
         )
-        let queued = try enqueueAdmissionFixture(unavailable)
+        _ = try enqueueAdmissionFixture(unavailable)
         _ = await unavailable.processPending()
         let parentID = try XCTUnwrap(context.fetch(FetchDescriptor<SmsProcessingOperation>()).first?.id)
         let available = AlertIngestionService(
@@ -924,16 +1004,17 @@ final class AlertIngestionServiceTests: XCTestCase {
             extractorEligibilityOverride: true
         )
 
-        _ = await available.processPending(includeNeedsReview: true)
-
+        let automaticCount = await available.processPending()
+        XCTAssertEqual(automaticCount, 0)
         let replayCalls = await probe.callCount
         XCTAssertEqual(replayCalls, 0)
         XCTAssertEqual(
             try ModelContext(database.container).fetch(FetchDescriptor<SmsProcessingOperation>()).count,
             1
         )
-        let receipt = try await available.retry(alertID: queued.alertID)
-        XCTAssertEqual(receipt.disposition, .needsReview)
+
+        let settingsRetryCount = await available.processPending(includeNeedsReview: true)
+        XCTAssertEqual(settingsRetryCount, 1)
         let fresh = ModelContext(database.container)
         XCTAssertEqual(try fresh.fetch(FetchDescriptor<SmsProcessingOperation>()).count, 2)
         XCTAssertNotNil(
@@ -946,10 +1027,53 @@ final class AlertIngestionServiceTests: XCTestCase {
         XCTAssertEqual(calls, 1)
     }
 
+    func testSettingsRetrySavedAlertsAutoSavesOnceAccountConfirmedAndClosesReviewCase() async throws {
+        let restore = TestFixtures.usePrimaryCurrency("INR")
+        defer { restore() }
+        let database = try TestFixtures.makeInMemoryDatabase()
+        let context = database.container.mainContext
+        let service = AlertIngestionService(
+            context: context,
+            smsExtractor: GroundedIngestionExtractor(),
+            extractorEligibilityOverride: true
+        )
+        let initial = try await service.ingest(
+            body: "INR 500.00 was debited from account **0000 at Demo Store.",
+            sender: "AX-HDFCBK",
+            receivedAt: TestFixtures.receivedAt,
+            sourceApplication: "Messages",
+            origin: .shortcut
+        )
+        XCTAssertEqual(initial.disposition, .needsReview)
+
+        let account = Account(name: "HDFC Checking", bank: "HDFC Bank", kind: .account, suffix: "0000")
+        context.insert(account)
+        context.insert(
+            SmsAccountAlias(
+                accountID: account.id,
+                normalizedAliasHash: CanonicalJSON.sha256("suffix:0000"),
+                aliasKind: "suffix",
+                matchingScope: "owned_account_v1",
+                confirmedByUser: true
+            )
+        )
+        try context.save()
+
+        let retried = await service.processPending(limit: 20, includeNeedsReview: true)
+        XCTAssertEqual(retried, 1)
+        let secondPass = await service.processPending(limit: 20, includeNeedsReview: true)
+        XCTAssertEqual(secondPass, 0)
+
+        let verification = ModelContext(database.container)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<Transaction>()).count, 1)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<InboxAlert>()).first?.status, .imported)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SmsReviewCase>()).first?.state, .confirmed)
+    }
+
     func testProcessingSaveFailureKeepsEvidenceAndCanRecoverWithoutDuplicateOperation() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         var saves = 0
@@ -984,7 +1108,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testOwnerRetryOfInterruptedUnownedWorkCreatesLinkedChild() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -1027,7 +1151,7 @@ final class AlertIngestionServiceTests: XCTestCase {
     func testOwnerRetryCannotLinkOperationFromAnotherSource() async throws {
         let restore = TestFixtures.usePrimaryCurrency("INR")
         defer { restore() }
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let probe = IngestionSelectorProbe()
         let service = AlertIngestionService(
@@ -1035,8 +1159,11 @@ final class AlertIngestionServiceTests: XCTestCase {
             smsExtractor: GroundedIngestionExtractor(probe: probe),
             extractorEligibilityOverride: true
         )
-        let first = try enqueueAdmissionFixture(service)
-        let second = try enqueueAdmissionFixture(service)
+        let first = try enqueueAdmissionFixture(service, receivedAt: TestFixtures.receivedAt)
+        let second = try enqueueAdmissionFixture(
+            service,
+            receivedAt: TestFixtures.receivedAt.addingTimeInterval(60)
+        )
         XCTAssertNotEqual(first.alertID, second.alertID)
         let snapshot = try SmsOperationSnapshotFactory(context: context).create(
             sourceAlertID: first.alertID,
@@ -1076,11 +1203,14 @@ final class AlertIngestionServiceTests: XCTestCase {
         }
     }
 
-    private func enqueueAdmissionFixture(_ service: AlertIngestionService) throws -> IngestionReceipt {
+    private func enqueueAdmissionFixture(
+        _ service: AlertIngestionService,
+        receivedAt: Date = TestFixtures.receivedAt
+    ) throws -> IngestionReceipt {
         try service.enqueue(
             body: "INR 500.00 was debited from account **0000 at Demo Store.",
             sender: "INVENTED",
-            receivedAt: TestFixtures.receivedAt,
+            receivedAt: receivedAt,
             sourceApplication: "Invented connector",
             origin: .manual
         )

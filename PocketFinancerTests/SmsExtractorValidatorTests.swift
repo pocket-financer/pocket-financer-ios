@@ -89,6 +89,203 @@ final class SmsExtractorValidatorTests: XCTestCase {
         XCTAssertEqual(credit.transaction?.direction, .credit)
     }
 
+    func testCreditDirectionGroundingHandlesNeutralPaymentAndTxnWords() throws {
+        let paymentReceived = "Payment of Rs.1,500.00 received towards your Credit Card XX1234."
+        XCTAssertTrue(SmsExtractorNormalizer.directionGrounded(direction: "credit", text: paymentReceived))
+        XCTAssertEqual(SmsExtractorNormalizer.inferredDirection(from: paymentReceived), "credit")
+        XCTAssertEqual(SmsExtractorNormalizer.direction(paymentReceived), "credit")
+        XCTAssertEqual(SmsExtractorNormalizer.supportedDirections(for: paymentReceived).first, "credit")
+
+        let txnRefunded = "UPI txn refunded Rs.250.00 to a/c XX1234."
+        XCTAssertTrue(SmsExtractorNormalizer.directionGrounded(direction: "credit", text: txnRefunded))
+        XCTAssertEqual(SmsExtractorNormalizer.inferredDirection(from: txnRefunded), "credit")
+        XCTAssertEqual(SmsExtractorNormalizer.supportedDirections(for: txnRefunded).first, "credit")
+
+        let transferCredited = "Transfer of Rs.900.00 credited to a/c XX1234."
+        XCTAssertEqual(SmsExtractorNormalizer.inferredDirection(from: transferCredited), "credit")
+
+        let creditCardDebit = "Payment of Rs.500.00 on your Credit Card XX1234."
+        XCTAssertTrue(SmsExtractorNormalizer.directionGrounded(direction: "debit", text: creditCardDebit))
+        XCTAssertEqual(SmsExtractorNormalizer.inferredDirection(from: creditCardDebit), "debit")
+        XCTAssertEqual(SmsExtractorNormalizer.supportedDirections(for: creditCardDebit).first, "debit")
+
+        XCTAssertEqual(SmsExtractorNormalizer.inferredDirection(from: "Txn Rs.500.00"), "debit")
+        XCTAssertEqual(SmsExtractorNormalizer.supportedDirections(for: "Txn Rs.500.00"), ["debit"])
+        XCTAssertNil(SmsExtractorNormalizer.inferredDirection(from: "Hello world"))
+        XCTAssertEqual(SmsExtractorNormalizer.supportedDirections(for: "Hello world"), [])
+
+        let validatedCredit = try SmsExtractorValidator().validate(
+            rawOutput: try TestFixtures.strictPostedOutput(
+                for: paymentReceived,
+                amountText: "Rs.1,500.00",
+                amountValue: "1500.00",
+                direction: "credit",
+                directionText: "Payment of Rs.1,500.00 received",
+                accountReference: "XX1234",
+                accountText: "XX1234",
+                counterpartyText: nil
+            ),
+            source: paymentReceived,
+            primaryCurrency: "INR"
+        )
+        XCTAssertEqual(validatedCredit.transaction?.direction, .credit)
+    }
+
+    func testCollectGroundedFieldsRetainsValidAndGroundedOnlyFieldsWithoutRepairingInvalidOutput() throws {
+        let source = "INR 500.00 debited from account at Demo Store."
+        let amountRange = try XCTUnwrap(source.range(of: "INR 500.00"))
+        let directionRange = try XCTUnwrap(source.range(of: "debited"))
+        let counterpartyRange = try XCTUnwrap(source.range(of: "Demo Store"))
+        let partialOutput = try SmsProcessingJSON.canonical([
+            "decision": "posted",
+            "amount": [
+                "value": "500.00",
+                "currency": "INR",
+                "evidence": [
+                    "start_scalar": source[..<amountRange.lowerBound].unicodeScalars.count,
+                    "end_scalar": source[..<amountRange.upperBound].unicodeScalars.count,
+                    "text": "INR 500.00",
+                ],
+            ],
+            "direction": [
+                "value": "credit",
+                "evidence": [
+                    "start_scalar": source[..<directionRange.lowerBound].unicodeScalars.count,
+                    "end_scalar": source[..<directionRange.upperBound].unicodeScalars.count,
+                    "text": "debited",
+                ],
+            ],
+            "account": [
+                "reference": "",
+                "evidence": ["start_scalar": 0, "end_scalar": 0, "text": ""],
+            ],
+            "counterparty": [
+                "value": "Demo Store",
+                "evidence": [
+                    "start_scalar": source[..<counterpartyRange.lowerBound].unicodeScalars.count,
+                    "end_scalar": source[..<counterpartyRange.upperBound].unicodeScalars.count,
+                    "text": "Demo Store",
+                ],
+            ],
+        ])
+
+        let validator = SmsExtractorValidator()
+        XCTAssertThrowsError(
+            try validator.validate(rawOutput: partialOutput, source: source, primaryCurrency: "INR")
+        )
+        let collected = validator.collectGroundedFields(
+            rawOutput: partialOutput,
+            source: source,
+            primaryCurrency: "INR"
+        )
+        let byField = Dictionary(uniqueKeysWithValues: collected.map { ($0.field, $0) })
+
+        XCTAssertEqual(byField[.amount]?.validationState, .valid)
+        XCTAssertEqual(byField[.amount]?.originatingStage, "normalization")
+        XCTAssertEqual(
+            byField[.amount]?.normalizedAmount,
+            SmsNormalizedAmountValue(minorUnits: 50_000, currency: "INR")
+        )
+        XCTAssertEqual(byField[.direction]?.validationState, .groundedOnly)
+        XCTAssertEqual(byField[.direction]?.originatingStage, "extractor_validation")
+        XCTAssertNil(byField[.direction]?.normalizedValue)
+        XCTAssertNil(byField[.account])
+        XCTAssertEqual(byField[.counterparty]?.validationState, .valid)
+        XCTAssertEqual(byField[.counterparty]?.normalizedCounterparty, "demo store")
+
+        XCTAssertTrue(
+            validator.collectGroundedFields(rawOutput: "not-json", source: source, primaryCurrency: "INR").isEmpty
+        )
+        XCTAssertTrue(
+            validator.collectGroundedFields(
+                rawOutput: #"{"decision":"none"}"#,
+                source: source,
+                primaryCurrency: "INR"
+            ).isEmpty
+        )
+        XCTAssertTrue(
+            validator.collectGroundedFields(
+                rawOutput: #"{"decision":"posted","decision":"posted"}"#,
+                source: source,
+                primaryCurrency: "INR"
+            ).isEmpty
+        )
+    }
+
+    func testNfkcAmountsLeadingZerosWhitespaceCollapsingAndUnicodeScalarEdgeCases() throws {
+        let fullwidthSource = "Ｒｓ．１，２５０．００ debited from XX  \t 1234 at Demo\u{00A0}\n  Store."
+        let fullwidthRaw = try TestFixtures.strictPostedOutput(
+            for: fullwidthSource,
+            amountText: "Ｒｓ．１，２５０．００",
+            amountValue: "1250.00",
+            currency: "INR",
+            direction: "debit",
+            directionText: "debited",
+            accountReference: "XX 1234",
+            accountText: "XX  \t 1234",
+            counterpartyText: "Demo\u{00A0}\n  Store"
+        )
+        let fullwidthResult = try SmsExtractorValidator().validate(
+            rawOutput: fullwidthRaw,
+            source: fullwidthSource,
+            primaryCurrency: "INR"
+        )
+        XCTAssertEqual(fullwidthResult.transaction?.minorUnits, 125_000)
+        XCTAssertEqual(fullwidthResult.transaction?.accountReference, "1234")
+        XCTAssertEqual(fullwidthResult.transaction?.counterparty, "demo store")
+
+        let leadingZeroSource = "INR 0100.00 paid from card XX1234 without\n  OTP."
+        let leadingZeroRaw = try TestFixtures.strictPostedOutput(
+            for: leadingZeroSource,
+            amountText: "INR 0100.00",
+            amountValue: "100.00",
+            currency: "INR",
+            direction: "debit",
+            directionText: "without\n  OTP",
+            accountReference: "XX1234",
+            accountText: "XX1234",
+            counterpartyText: nil
+        )
+        let leadingZeroResult = try SmsExtractorValidator().validate(
+            rawOutput: leadingZeroRaw,
+            source: leadingZeroSource,
+            primaryCurrency: "INR"
+        )
+        XCTAssertEqual(leadingZeroResult.transaction?.minorUnits, 10_000)
+        XCTAssertEqual(
+            try SmsExtractorNormalizer.minorUnits(evidenceText: "Rs. 00000000000000000000050.25", currency: "INR"),
+            5_025
+        )
+
+        let crlfSource = "INR 500\r\nDebited"
+        let beforeNewline = try UnicodeScalarSpan(source: crlfSource, startScalar: 0, endScalar: 8, text: "INR 500\r")
+        XCTAssertEqual(try beforeNewline.nsRange(in: crlfSource), NSRange(location: 0, length: 8))
+        let fromNewline = try UnicodeScalarSpan(source: crlfSource, startScalar: 8, endScalar: 16, text: "\nDebited")
+        XCTAssertEqual(try fromNewline.nsRange(in: crlfSource), NSRange(location: 8, length: 8))
+        XCTAssertEqual(
+            UnicodeScalarSpan(source: crlfSource, nsRange: NSRange(location: 8, length: 8)),
+            fromNewline
+        )
+
+        let combiningSource = "Cafe\u{0301} INR 42.00"
+        let baseOnly = try UnicodeScalarSpan(source: combiningSource, startScalar: 0, endScalar: 4, text: "Cafe")
+        XCTAssertEqual(try baseOnly.nsRange(in: combiningSource), NSRange(location: 0, length: 4))
+        XCTAssertEqual(
+            UnicodeScalarSpan(source: combiningSource, nsRange: NSRange(location: 0, length: 4)),
+            baseOnly
+        )
+
+        let emojiSource = "A 💳 INR"
+        XCTAssertEqual(
+            UnicodeScalarSpan(source: emojiSource, nsRange: NSRange(location: 2, length: 2)),
+            try UnicodeScalarSpan(source: emojiSource, startScalar: 2, endScalar: 3, text: "💳")
+        )
+        XCTAssertNil(UnicodeScalarSpan(source: emojiSource, nsRange: NSRange(location: 2, length: 1)))
+        XCTAssertThrowsError(try baseOnly.nsRange(in: "Other text")) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .evidenceMismatch)
+        }
+    }
+
     func testNonCurrencyWordsWithRsDoNotTriggerInrMarkerConflict() throws {
         let source = "Paid orders 25.00 from card XX1234."
         let raw = try TestFixtures.strictPostedOutput(

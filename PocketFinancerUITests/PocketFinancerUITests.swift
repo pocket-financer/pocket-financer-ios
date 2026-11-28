@@ -6,7 +6,7 @@ final class PocketFinancerUITests: XCTestCase {
     }
 
     @MainActor
-    func testOnboardingReachesManualImportAndProcessingTrace() throws {
+    func testOnboardingReachesDirectReviewProcessingDetailsAndConfirmation() throws {
         let app = launchResetApp()
         completeOnboarding(in: app)
 
@@ -17,24 +17,7 @@ final class PocketFinancerUITests: XCTestCase {
         transactionsTab.tap()
         XCTAssertTrue(app.navigationBars["Transactions"].waitForExistence(timeout: 10))
 
-        let importButton = app.buttons["import-alert-button"]
-        XCTAssertTrue(waitForHittable(importButton, timeout: 10))
-        importButton.tap()
-
-        let manualBody = app.textViews["manual-body"]
-        if !manualBody.waitForExistence(timeout: 10) {
-            XCTAssertTrue(waitForHittable(importButton, timeout: 5))
-            importButton.tap()
-            XCTAssertTrue(manualBody.waitForExistence(timeout: 10))
-        }
-        XCTAssertTrue(app.textFields["manual-sender"].waitForExistence(timeout: 5))
-        let submitButton = app.buttons["manual-import-submit"]
-        XCTAssertTrue(waitForHittable(submitButton, timeout: 5))
-        submitButton.tap()
-
-        let importAlert = app.alerts["Import result"]
-        XCTAssertTrue(importAlert.waitForExistence(timeout: 15))
-        importAlert.buttons["Done"].tap()
+        importSampleAlert(in: app)
 
         let reviewRow = app.buttons.matching(
             NSPredicate(format: "label CONTAINS[c] %@", "Needs review")
@@ -42,8 +25,79 @@ final class PocketFinancerUITests: XCTestCase {
         XCTAssertTrue(waitForHittable(reviewRow, timeout: 10))
         reviewRow.tap()
 
+        // Direct navigation to SMS-grounded Review screen
+        XCTAssertTrue(app.navigationBars["Review transaction"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["review-source-evidence"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["review-field-chip-amount"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["review-field-chip-direction"].exists)
+        XCTAssertTrue(app.buttons["review-field-chip-account"].exists)
+        XCTAssertTrue(app.buttons["review-field-chip-counterparty"].exists)
+
+        // Verify "Why review?" disclosure leads to Processing details ("What Happened")
+        let whyToggle = app.buttons["review-why-toggle"]
+        XCTAssertTrue(waitForHittable(whyToggle, timeout: 5))
+        whyToggle.tap()
+
+        let processingLink = app.buttons["open-processing-details"]
+        XCTAssertTrue(scrollToHittable(processingLink, in: app, maximumSwipes: 3))
+        processingLink.tap()
+
         XCTAssertTrue(app.navigationBars["What Happened"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["review-outcome"].waitForExistence(timeout: 5))
+
+        let backButton = app.navigationBars.buttons.element(boundBy: 0)
+        XCTAssertTrue(waitForHittable(backButton, timeout: 5))
+        backButton.tap()
+        XCTAssertTrue(app.navigationBars["Review transaction"].waitForExistence(timeout: 10))
+
+        if whyToggle.exists && whyToggle.isHittable {
+            whyToggle.tap()
+        }
+
+        // Assign fields via quick-choice chips if not already populated by model extraction
+        for identifier in [
+            "review-quick-amount-0",
+            "review-quick-direction-0",
+            "review-quick-account-0",
+        ] {
+            let chip = app.buttons[identifier]
+            if scrollToHittable(chip, in: app, maximumSwipes: 4) {
+                chip.tap()
+            }
+        }
+
+        let confirmButton = app.buttons["review-confirm-transaction"]
+        XCTAssertTrue(scrollToHittable(confirmButton, in: app, maximumSwipes: 6))
+        XCTAssertTrue(confirmButton.isEnabled)
+        confirmButton.tap()
+
+        XCTAssertTrue(app.navigationBars["Transactions"].waitForExistence(timeout: 10))
+        XCTAssertTrue(reviewRow.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testDirectReviewRejectRemovesAlertFromNeedsReview() throws {
+        let app = launchResetApp(completedOnboarding: true, confirmedCurrency: "INR")
+        let transactionsTab = app.tabBars.buttons["Transactions"]
+        XCTAssertTrue(waitForHittable(transactionsTab, timeout: 15))
+        transactionsTab.tap()
+        XCTAssertTrue(app.navigationBars["Transactions"].waitForExistence(timeout: 10))
+
+        importSampleAlert(in: app)
+
+        let reviewRow = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "Needs review")
+        ).firstMatch
+        XCTAssertTrue(waitForHittable(reviewRow, timeout: 10))
+        reviewRow.tap()
+
+        XCTAssertTrue(app.navigationBars["Review transaction"].waitForExistence(timeout: 10))
+        let rejectButton = app.buttons["review-reject-alert"]
+        XCTAssertTrue(scrollToHittable(rejectButton, in: app, maximumSwipes: 8))
+        rejectButton.tap()
+
+        XCTAssertTrue(app.navigationBars["Transactions"].waitForExistence(timeout: 10))
+        XCTAssertTrue(reviewRow.waitForNonExistence(timeout: 5))
     }
 
     @MainActor
@@ -128,6 +182,28 @@ final class PocketFinancerUITests: XCTestCase {
     }
 
     @MainActor
+    private func importSampleAlert(in app: XCUIApplication) {
+        let importButton = app.buttons["import-alert-button"]
+        XCTAssertTrue(waitForHittable(importButton, timeout: 10))
+        importButton.tap()
+
+        let manualBody = app.textViews["manual-body"]
+        if !manualBody.waitForExistence(timeout: 10) {
+            XCTAssertTrue(waitForHittable(importButton, timeout: 5))
+            importButton.tap()
+            XCTAssertTrue(manualBody.waitForExistence(timeout: 10))
+        }
+        XCTAssertTrue(app.textFields["manual-sender"].waitForExistence(timeout: 5))
+        let submitButton = app.buttons["manual-import-submit"]
+        XCTAssertTrue(waitForHittable(submitButton, timeout: 5))
+        submitButton.tap()
+
+        let importAlert = app.alerts["Import result"]
+        XCTAssertTrue(importAlert.waitForExistence(timeout: 15))
+        importAlert.buttons["Done"].tap()
+    }
+
+    @MainActor
     private func completeOnboarding(in app: XCUIApplication) {
         XCTAssertTrue(app.staticTexts["Your finances stay yours"].waitForExistence(timeout: 10))
         let continueButton = app.buttons["onboarding-continue"]
@@ -151,7 +227,10 @@ final class PocketFinancerUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchResetApp(completedOnboarding: Bool = false) -> XCUIApplication {
+    private func launchResetApp(
+        completedOnboarding: Bool = false,
+        confirmedCurrency: String? = nil
+    ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = [
             "--ui-testing-reset",
@@ -160,6 +239,12 @@ final class PocketFinancerUITests: XCTestCase {
         ]
         if completedOnboarding {
             app.launchArguments += ["-onboarding.completed.v1", "YES"]
+        }
+        if let confirmedCurrency {
+            app.launchArguments += [
+                "-primaryCurrencyConfirmed", "YES",
+                "-primaryCurrencyCode", confirmedCurrency,
+            ]
         }
         app.launch()
         return app
@@ -172,6 +257,24 @@ final class PocketFinancerUITests: XCTestCase {
             object: element
         )
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    @MainActor
+    private func scrollToHittable(
+        _ element: XCUIElement,
+        in app: XCUIApplication,
+        maximumSwipes: Int = 6
+    ) -> Bool {
+        if waitForHittable(element, timeout: 1.5) {
+            return true
+        }
+        for _ in 0..<maximumSwipes {
+            app.swipeUp()
+            if waitForHittable(element, timeout: 1.5) {
+                return true
+            }
+        }
+        return false
     }
 
     @MainActor

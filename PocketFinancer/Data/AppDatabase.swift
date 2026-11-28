@@ -250,7 +250,7 @@ final class AppDatabase {
     }
 
     func prepareForProcessing() async throws {
-        let store = SmsProcessingStore(modelContainer: container)
+        let store = SmsProcessingStore.shared(for: container)
         try await store.backfillLegacyTransactions()
         try await store.recoverExpiredOperations()
     }

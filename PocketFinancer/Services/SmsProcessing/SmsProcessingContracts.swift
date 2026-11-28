@@ -1,13 +1,13 @@
 import CryptoKit
 import Foundation
 
-struct AdmittedMessageRef: Codable, Equatable, Sendable {
+nonisolated struct AdmittedMessageRef: Codable, Equatable, Sendable {
     let sourceID: UUID
     let admissionReceiptID: UUID
     let sourceDigest: String
 }
 
-enum SmsProcessingOutcome: Equatable, Sendable {
+nonisolated enum SmsProcessingOutcome: Equatable, Sendable {
     case terminallyDiscarded(operationID: UUID, reason: String)
     case retainedForReview(operationID: UUID, reviewCaseID: UUID, reasons: [String])
     case persisted(operationID: UUID, transactionIDs: [UUID], alreadyCommitted: Bool)
@@ -15,21 +15,21 @@ enum SmsProcessingOutcome: Equatable, Sendable {
     case stopped(operationID: UUID, reviewCaseID: UUID?, reason: String)
 }
 
-struct StopReceipt: Equatable, Sendable {
+nonisolated struct StopReceipt: Equatable, Sendable {
     let operationID: UUID
     let reviewCaseID: UUID?
     let state: SmsOperationState
     let committed: Bool
 }
 
-enum SmsFieldGroundingClassification: String, Codable, Sendable {
+nonisolated enum SmsFieldGroundingClassification: String, Codable, Sendable {
     case selectedExistingCandidate = "selected_existing_candidate"
     case changedInterpretationAmongCandidates = "changed_interpretation_among_candidates"
     case suppliedSourceSupportedCandidateMiss = "supplied_source_supported_candidate_miss"
     case suppliedManualUngroundedValue = "supplied_manual_ungrounded_value"
 }
 
-struct SmsFieldCorrection: Codable, Equatable, Sendable {
+nonisolated struct SmsFieldCorrection: Codable, Equatable, Sendable {
     let field: String
     let classification: SmsFieldGroundingClassification
     let previousRevisionID: UUID?
@@ -57,7 +57,7 @@ struct SmsFieldCorrection: Codable, Equatable, Sendable {
     }
 }
 
-enum ReviewCommandKind: String, Codable, Sendable {
+nonisolated enum ReviewCommandKind: String, Codable, Sendable {
     case confirm
     case correct
     case reject
@@ -66,7 +66,7 @@ enum ReviewCommandKind: String, Codable, Sendable {
     case retry
 }
 
-struct ReviewCommand: Codable, Equatable, Sendable {
+nonisolated struct ReviewCommand: Codable, Equatable, Sendable {
     let actionID: UUID
     let reviewCaseID: UUID
     let expectedRevision: Int
@@ -75,14 +75,14 @@ struct ReviewCommand: Codable, Equatable, Sendable {
     let retryConfiguration: String?
 }
 
-struct ReviewReceipt: Equatable, Sendable {
+nonisolated struct ReviewReceipt: Equatable, Sendable {
     let actionID: UUID
     let reviewCaseID: UUID
     let resultingRevision: Int
     let replayed: Bool
 }
 
-struct TransactionProjectionEditCommand: Equatable, Sendable {
+nonisolated struct TransactionProjectionEditCommand: Equatable, Sendable {
     let actionID: UUID
     let transactionID: UUID
     let expectedRevision: Int
@@ -95,14 +95,14 @@ struct TransactionProjectionEditCommand: Equatable, Sendable {
     let corrections: [SmsFieldCorrection]
 }
 
-struct TransactionProjectionEditReceipt: Equatable, Sendable {
+nonisolated struct TransactionProjectionEditReceipt: Equatable, Sendable {
     let actionID: UUID
     let transactionID: UUID
     let resultingRevision: Int
     let replayed: Bool
 }
 
-enum SmsCandidateKind: String, Codable, Sendable {
+nonisolated enum SmsCandidateKind: String, Codable, Sendable {
     case amount
     case direction
     case account
@@ -272,7 +272,7 @@ nonisolated struct SmsAnalysis: Codable, Equatable, Sendable {
     }
 }
 
-enum PersistenceGateResult: String, Codable, Sendable {
+nonisolated enum PersistenceGateResult: String, Codable, Sendable {
     case eligible
     case reviewRequired = "review_required"
     case notPosted = "not_posted"
@@ -281,13 +281,13 @@ enum PersistenceGateResult: String, Codable, Sendable {
     case invalidOperation = "invalid_operation"
 }
 
-struct PersistenceGateCheck: Codable, Equatable, Sendable {
+nonisolated struct PersistenceGateCheck: Codable, Equatable, Sendable {
     let check: String
     let passed: Bool
     let reasonCode: String?
 }
 
-struct PersistenceGateDecision: Codable, Equatable, Sendable {
+nonisolated struct PersistenceGateDecision: Codable, Equatable, Sendable {
     let result: PersistenceGateResult
     let primaryReason: String
     let checks: [PersistenceGateCheck]
@@ -297,7 +297,7 @@ protocol SmsProcessingObserver: Sendable {
     func didReceive(_ event: SmsProcessingObserverEvent) async
 }
 
-struct SmsProcessingObserverEvent: Equatable, Sendable {
+nonisolated struct SmsProcessingObserverEvent: Equatable, Sendable {
     let operationID: UUID
     let sequence: Int
     let stage: String
@@ -305,13 +305,13 @@ struct SmsProcessingObserverEvent: Equatable, Sendable {
     let reasonCodes: [String]
 }
 
-struct SmsTraceReceipt: Equatable, Sendable {
+nonisolated struct SmsTraceReceipt: Equatable, Sendable {
     let eventID: UUID
     let sequence: Int
     let eventHash: String
 }
 
-struct NoOpSmsProcessingObserver: SmsProcessingObserver {
+nonisolated struct NoOpSmsProcessingObserver: SmsProcessingObserver {
     func didReceive(_: SmsProcessingObserverEvent) async {}
 }
 

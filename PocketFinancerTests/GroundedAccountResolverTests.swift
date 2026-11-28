@@ -7,14 +7,14 @@ import XCTest
 @MainActor
 final class GroundedAccountResolverTests: XCTestCase {
     func testNilIdentifierReturnsMissing() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let resolution = try GroundedAccountResolver(context: database.container.mainContext).resolve(nil)
 
         XCTAssertEqual(resolution, .missing)
     }
 
     func testMaskedSuffixAndVpaResolveConfirmedOwnedAliasesWithLiveAccount() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let suffixAccount = Account(
             name: "A/c XX1234",
@@ -62,7 +62,7 @@ final class GroundedAccountResolverTests: XCTestCase {
     }
 
     func testUnconfirmedWrongScopeDanglingAndMultiNumberAliasesStayUnresolved() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let account = Account(
             name: "A/c XX4321",
@@ -108,7 +108,7 @@ final class GroundedAccountResolverTests: XCTestCase {
     }
 
     func testMultipleLiveAccountsForOneConfirmedAliasAreAmbiguous() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let aliasHash = CanonicalJSON.sha256("suffix:1234")
         let accounts = [
