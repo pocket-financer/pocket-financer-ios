@@ -153,6 +153,43 @@ final class DiagnosticsAndRuntimeTests: XCTestCase {
             "Possible duplicate detected"
         )
         XCTAssertEqual(
+            AlertProcessingDiagnostics.presentation(for: "duplicate_already_persisted").title,
+            "Already saved"
+        )
+        XCTAssertEqual(
+            AlertProcessingDiagnostics.presentation(for: "configuration_primary_currency_required").title,
+            "Confirm primary currency"
+        )
+        XCTAssertEqual(
+            AlertProcessingDiagnostics.presentation(for: "tombstoned_rejected").title,
+            "Dismissed in Review"
+        )
+        let mappedCodes = [
+            "configuration_primary_currency_required",
+            "tombstoned_rejected",
+            "duplicate_possible",
+            "duplicate_already_persisted",
+            "account_resolution_unresolved",
+            "account_resolution_ambiguous",
+            "extractor_malformed_json",
+            "extractor_missing_amount",
+            "extractor_posted_valid",
+            "persistence_configuration_hash_mismatch",
+            "persistence_grounded_fields_missing",
+            "original_configuration_adapter_unavailable",
+            "saved_operation_requires_explicit_retry",
+            "runtime_failure",
+            "runtime_timeout",
+            "retry_exhausted",
+            "prefilter_eligible",
+        ]
+        for code in mappedCodes {
+            let presentation = AlertProcessingDiagnostics.presentation(for: code)
+            XCTAssertNotEqual(presentation.title, "Recorded processing code", code)
+            XCTAssertFalse(presentation.title.contains("iOS 27"), code)
+            XCTAssertFalse(presentation.detail.contains("iOS 27"), code)
+        }
+        XCTAssertEqual(
             AlertProcessingDiagnostics.presentation(for: "unrecognized_synthetic_code").title,
             "Recorded processing code"
         )

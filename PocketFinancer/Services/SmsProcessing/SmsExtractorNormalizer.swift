@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated enum SmsExtractorNormalizer {
-    static let debitDirectionCues = [
+    static let explicitDebitDirectionCues = [
         "debit",
         "debited",
         "deducted",
@@ -10,11 +10,6 @@ nonisolated enum SmsExtractorNormalizer {
         "paid",
         "charged",
         "sent",
-        "txn",
-        "transaction",
-        "payment",
-        "transfer",
-        "transferred",
         "purchase",
         "purchased",
         "autopaid",
@@ -22,6 +17,16 @@ nonisolated enum SmsExtractorNormalizer {
         "dr",
         "used",
     ]
+
+    static let neutralDebitDirectionCues = [
+        "txn",
+        "transaction",
+        "payment",
+        "transfer",
+        "transferred",
+    ]
+
+    static let debitDirectionCues = explicitDebitDirectionCues + neutralDebitDirectionCues
 
     static let creditDirectionCues = [
         "credit",
@@ -39,27 +44,21 @@ nonisolated enum SmsExtractorNormalizer {
     ]
 
     static func normalizeAccount(_ value: String) -> String? {
-        let normalized = frozenCaseFold(
-            value.precomposedStringWithCompatibilityMapping
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        let normalized = normalizeText(value)
         if let range = normalized.range(
             of: #"[a-z0-9][a-z0-9._-]{1,}@[a-z0-9][a-z0-9.-]+"#,
             options: .regularExpression
         ) {
             return String(normalized[range])
         }
-        let values = normalized.matches(of: /(?:[xX*•-]{2,}\s*)?\d{3,8}/)
+        let values = normalized.matches(of: /(?:[xX*•-]{2,}\s*)?[0-9]{3,8}/)
         guard values.count == 1 else { return nil }
-        let digits = values[0].output.filter(\.isNumber)
-        return (3...8).contains(digits.count) ? digits : nil
+        let digits = values[0].output.filter { $0.isASCII && $0.isNumber }
+        return (3...8).contains(digits.count) ? String(digits) : nil
     }
 
     static func normalizeCounterparty(_ value: String) -> String? {
-        let result = frozenCaseFold(
-            value.precomposedStringWithCompatibilityMapping
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let result = normalizeText(value)
         return !result.isEmpty && result.unicodeScalars.count <= 256 ? result : nil
     }
 
@@ -87,23 +86,19 @@ nonisolated enum SmsExtractorNormalizer {
         guard matches.count == 1,
             let valueRange = Range(matches[0].range, in: normalized)
         else { throw SmsExtractorValidationError.amountInvalid }
-        return try minorUnits(
-            decimal: String(normalized[valueRange]).replacingOccurrences(of: ",", with: ""),
-            currency: currency
-        )
+        let rawNumber = String(normalized[valueRange]).replacingOccurrences(of: ",", with: "")
+        let canonical = canonicalEvidenceDecimal(rawNumber)
+        guard
+            let parsed = CurrencyProfileRegistry.parse(
+                number: canonical,
+                currency: currency,
+                provenance: "extractor_evidence"
+            )
+        else { throw SmsExtractorValidationError.amountInvalid }
+        return parsed.minorUnits
     }
 
-    static func direction(_ value: String) -> String? {
-        if isDirectionGrounded("debit", in: value) {
-            return "debit"
-        }
-        if isDirectionGrounded("credit", in: value) {
-            return "credit"
-        }
-        return nil
-    }
-
-    static func isDirectionGrounded(_ direction: String, in evidence: String) -> Bool {
+    static func directionGrounded(direction: String, text: String) -> Bool {
         let cues: [String]
         switch direction {
         case "debit":
@@ -113,13 +108,54 @@ nonisolated enum SmsExtractorNormalizer {
         default:
             return false
         }
-        let normalized = normalizeText(evidence)
-        return cues.contains {
-            normalized.range(
-                of: #"\b"# + NSRegularExpression.escapedPattern(for: $0) + #"\b"#,
-                options: .regularExpression
-            ) != nil
+        let normalized = normalizeText(text)
+        return matchesAnyCue(cues, in: normalized)
+    }
+
+    static func isDirectionGrounded(_ direction: String, in evidence: String) -> Bool {
+        directionGrounded(direction: direction, text: evidence)
+    }
+
+    static func inferredDirection(from text: String) -> String? {
+        let normalized = normalizeText(text)
+        let hasExplicitDebit = matchesAnyCue(explicitDebitDirectionCues, in: normalized)
+        if hasExplicitDebit {
+            return "debit"
         }
+        let withoutCreditCard = normalized.replacingOccurrences(
+            of: #"\bcredit\s+cards?\b"#,
+            with: " ",
+            options: .regularExpression
+        )
+        if matchesAnyCue(creditDirectionCues, in: withoutCreditCard) {
+            return "credit"
+        }
+        if matchesAnyCue(neutralDebitDirectionCues, in: normalized) {
+            return "debit"
+        }
+        if matchesAnyCue(creditDirectionCues, in: normalized) {
+            return "credit"
+        }
+        return nil
+    }
+
+    static func supportedDirections(for text: String) -> [String] {
+        var directions: [String] = []
+        if let preferred = inferredDirection(from: text),
+            directionGrounded(direction: preferred, text: text)
+        {
+            directions.append(preferred)
+        }
+        for candidate in ["debit", "credit"] where !directions.contains(candidate) {
+            if directionGrounded(direction: candidate, text: text) {
+                directions.append(candidate)
+            }
+        }
+        return directions
+    }
+
+    static func direction(_ value: String) -> String? {
+        inferredDirection(from: value)
     }
 
     static func normalizeText(_ value: String) -> String {
@@ -138,5 +174,25 @@ nonisolated enum SmsExtractorNormalizer {
             result.append(contentsOf: mapped)
         }
         return result
+    }
+
+    private static func matchesAnyCue(_ cues: [String], in normalized: String) -> Bool {
+        cues.contains {
+            normalized.range(
+                of: #"\b"# + NSRegularExpression.escapedPattern(for: $0) + #"\b"#,
+                options: .regularExpression
+            ) != nil
+        }
+    }
+
+    private static func canonicalEvidenceDecimal(_ number: String) -> String {
+        let parts = number.split(separator: ".", omittingEmptySubsequences: false)
+        guard !parts.isEmpty, parts.count <= 2 else { return number }
+        let strippedWhole = parts[0].drop(while: { $0 == "0" })
+        let whole = strippedWhole.isEmpty ? "0" : String(strippedWhole)
+        if parts.count == 2 {
+            return "\(whole).\(parts[1])"
+        }
+        return whole
     }
 }

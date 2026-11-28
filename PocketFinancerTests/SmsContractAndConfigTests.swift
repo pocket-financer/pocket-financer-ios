@@ -48,8 +48,51 @@ final class SmsContractAndConfigTests: XCTestCase {
         }
     }
 
+    func testContractAssetsCacheMainBundleVerificationAndStillDetectTamperedBundles() throws {
+        SmsContractAssets.resetCacheForTesting()
+        XCTAssertEqual(SmsContractAssets.mainBundleVerificationCountForTesting, 0)
+
+        let first = try SmsContractAssets.verify()
+        let second = try SmsContractAssets.verify()
+        _ = try SmsContractAssets.extractorPrompt()
+        _ = try SmsContractAssets.extractorPrompt()
+        let codesFirst = try SmsContractAssets.currentISO4217CurrencyCodes()
+        let codesSecond = try SmsContractAssets.currentISO4217CurrencyCodes()
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(codesFirst, codesSecond)
+        XCTAssertEqual(SmsContractAssets.mainBundleVerificationCountForTesting, 1)
+
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sms-contract-cache-test-\(UUID().uuidString)", isDirectory: true)
+        let smsRoot = tempDirectory.appendingPathComponent("SmsProcessing", isDirectory: true)
+        try FileManager.default.createDirectory(at: smsRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let allPaths = ["release-manifest.json"] + SmsContractAssets.requiredIOSAssetPaths
+        for relativePath in allPaths {
+            let destination = smsRoot.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try SmsContractAssets.loadData(forRelativePath: relativePath)
+            try data.write(to: destination)
+        }
+
+        let tempBundle = try XCTUnwrap(Bundle(url: tempDirectory))
+        let verifiedTemp = try SmsContractAssets.verify(in: tempBundle)
+        XCTAssertEqual(verifiedTemp.manifestSHA256, first.manifestSHA256)
+
+        let promptURL = smsRoot.appendingPathComponent("prompts/apple-fm-sms-extractor.txt")
+        try Data("tampered prompt".utf8).write(to: promptURL)
+        XCTAssertThrowsError(try SmsContractAssets.verify(in: tempBundle)) { error in
+            XCTAssertEqual(error as? SmsContractAssetError, .configurationIntegrityFailure)
+        }
+    }
+
     func testSnapshotFactoryProducesVerifiableAutomaticFlatGuidedConfiguration() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let alert = TestFixtures.makeAlert()
         context.insert(alert)
@@ -102,7 +145,7 @@ final class SmsContractAndConfigTests: XCTestCase {
     }
 
     func testSnapshotFactoryRejectsInvalidCurrencyProfilesOrMissingReferences() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let alert = TestFixtures.makeAlert()
         context.insert(alert)
@@ -163,7 +206,7 @@ final class SmsContractAndConfigTests: XCTestCase {
     }
 
     func testProcessingJSONBuildsRequestsAccountsAndPersistenceGateDecisions() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let alert = TestFixtures.makeAlert()
         context.insert(alert)

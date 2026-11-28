@@ -79,6 +79,41 @@ final class FoundationSmsExtractorTests: XCTestCase {
         }
     }
 
+    func testIncompleteResponseSkipsFlatProjectionAndReportsIncompleteCompletion() throws {
+        var projectionAttempted = false
+        let incomplete = try SmsFlatExtractionProjector.makeSelectorResponse(
+            isComplete: false,
+            requestJSON: #"{"contract":"pocketfinancer.sms-extractor-input/1"}"#
+        ) {
+            projectionAttempted = true
+            return FlatSmsExtraction(decision: "invalid_truncated_decision", amountValue: "500")
+        }
+        XCTAssertFalse(projectionAttempted)
+        XCTAssertEqual(incomplete.completion, "incomplete")
+        XCTAssertEqual(incomplete.rawOutput, "")
+        XCTAssertEqual(incomplete.runtimeProfileJSON, SmsFlatExtractionProjector.runtimeProfileJSON)
+
+        let complete = try SmsFlatExtractionProjector.makeSelectorResponse(
+            isComplete: true,
+            requestJSON: #"{"contract":"pocketfinancer.sms-extractor-input/1"}"#
+        ) {
+            FlatSmsExtraction(decision: "none")
+        }
+        XCTAssertEqual(complete.completion, "complete")
+        XCTAssertEqual(complete.rawOutput, #"{"decision":"none"}"#)
+
+        XCTAssertThrowsError(
+            try SmsFlatExtractionProjector.makeSelectorResponse(
+                isComplete: true,
+                requestJSON: #"{}"#
+            ) {
+                FlatSmsExtraction(decision: "none", amountValue: "100.00")
+            }
+        ) { error in
+            XCTAssertEqual(error as? SmsExtractorValidationError, .nonPostedExtraFields)
+        }
+    }
+
     func testPostedFlatProjectionMatchesValidatorWithAndWithoutCounterparty() throws {
         let source = "HDFC Bank: Rs.500.00 debited from a/c XXXXXX0000 at Demo Store."
         let withCounterparty = try TestFixtures.strictPostedOutput(for: source)

@@ -110,8 +110,23 @@ final class StructuralSmsAnalyzerTests: XCTestCase {
         XCTAssertEqual(evidence?.endCharacter, 6)
     }
 
+    func testAnalyzerHintsConvertCrlfAndCombiningMarkEvidenceToScalarSpans() throws {
+        let body = "Cafe\u{0301}\r\nINR 250.00 debited from a/c XX1234."
+        let (analysis, _) = try analyze(body)
+        let hintsFromStruct = SmsReviewProjection.analyzerHints(from: analysis, source: body)
+        let hintsFromJSON = SmsReviewProjection.analyzerHints(
+            fromAnalysisJSON: try analysis.canonicalJSON,
+            source: body
+        )
+
+        XCTAssertEqual(hintsFromStruct, hintsFromJSON)
+        XCTAssertTrue(hintsFromStruct.contains { $0.kind == "amount" && $0.sourceSpan?.text == "INR 250.00" })
+        XCTAssertTrue(hintsFromStruct.contains { $0.kind == "direction" && $0.sourceSpan?.text == "debited" })
+        XCTAssertTrue(hintsFromStruct.contains { $0.kind == "account" && $0.sourceSpan?.text == "a/c XX1234" })
+    }
+
     private func analyze(_ body: String) throws -> (SmsAnalysis, SmsOperationSnapshot) {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
         let alert = TestFixtures.makeAlert(body: body)
         context.insert(alert)

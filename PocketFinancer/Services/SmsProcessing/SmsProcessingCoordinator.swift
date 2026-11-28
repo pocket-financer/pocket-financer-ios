@@ -44,6 +44,10 @@ actor SmsProcessingCoordinator {
                 reasons: ["persistence_configuration_hash_mismatch"]
             )
         }
+        var activeClaim: SmsOperationClaim?
+        var latestAnalysis: SmsAnalysis?
+        var latestSourceBody: String?
+        var furthestStage = "configuration"
         do {
             if let settled = try await store.settledOutcome(operationID: operation.operationID) {
                 return settled
@@ -57,6 +61,7 @@ actor SmsProcessingCoordinator {
             } else {
                 claim = try await store.claim(operationID: operation.operationID)
             }
+            activeClaim = claim
             let heartbeatTask = Task { [store, initialClaim = claim] in
                 var renewableClaim = initialClaim
                 while !Task.isCancelled {
@@ -70,43 +75,60 @@ actor SmsProcessingCoordinator {
             defer { heartbeatTask.cancel() }
             try await trace(&claim, "claim", "completed", [], observer)
             let evidence = try await store.sourceEvidence(sourceID: source.sourceID)
+            latestSourceBody = evidence.body
             guard evidence.admissionReceiptID == source.admissionReceiptID,
                 CanonicalJSON.sha256(evidence.body) == source.sourceDigest
             else {
-                return try await retain(
+                let outcome = try await retain(
                     &claim,
                     operation: operation,
                     reasons: ["persistence_configuration_hash_mismatch"],
+                    furthestStage: "configuration",
+                    slmFields: [],
+                    analysis: nil,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
             let prefilter = SmsPrefilter.evaluate(evidence.body)
             if prefilter.decision == .exclude {
-                return try await settlePrefilterExcluded(
+                let outcome = try await settlePrefilterExcluded(
                     &claim,
                     prefilterReason: prefilter.reason,
                     operation: operation,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
             try await trace(&claim, "prefilter", "completed", ["prefilter_eligible"], observer)
             let analysis = try analyzer.analyze(source: evidence.body, operation: operation)
-            try await store.recordAnalysis(analysis, operationID: operation.operationID)
+            latestAnalysis = analysis
+            furthestStage = "analysis_advisory"
+            try await store.recordAnalysis(claim, analysis: analysis)
             try await store.transition(claim, expected: .claimed, to: .analyzed)
             try await trace(&claim, "analysis", "completed", analysis.reasonCodes, observer)
             // Advisory only: no deterministic triage result can bypass the extractor.
             try await store.transition(claim, expected: .analyzed, to: .triaged)
             try await trace(&claim, "triage", "completed", analysis.reasonCodes, observer)
             guard operation.configuration.extractor.eligible else {
-                return try await retain(
+                let outcome = try await retain(
                     &claim,
                     operation: operation,
                     reasons: [
                         operation.configuration.extractor.ineligibilityReason
                             ?? "runtime_unavailable"
                     ],
+                    furthestStage: "analysis_advisory",
+                    slmFields: [],
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
             let request = try SmsProcessingJSON.request(
                 source: evidence.body,
@@ -114,6 +136,7 @@ actor SmsProcessingCoordinator {
                 analysis: analysis,
                 configuration: operation.configuration
             )
+            furthestStage = "extractor_execution"
             try await store.transition(claim, expected: .triaged, to: .selectorRunning)
             try await trace(&claim, "selector_execution", "running", [], observer)
             let startedAt = Date.now
@@ -122,6 +145,7 @@ actor SmsProcessingCoordinator {
                 // Exactly one invocation. Invalid output is never retried automatically.
                 response = try await extractor.extract(requestJSON: request)
             } catch TransactionParserError.cancelled {
+                activeClaim = nil
                 let receipt = try await store.stop(operationID: operation.operationID)
                 return .stopped(
                     operationID: operation.operationID,
@@ -129,6 +153,7 @@ actor SmsProcessingCoordinator {
                     reason: "operation_interrupted"
                 )
             } catch is CancellationError {
+                activeClaim = nil
                 let receipt = try await store.stop(operationID: operation.operationID)
                 return .stopped(
                     operationID: operation.operationID,
@@ -136,64 +161,94 @@ actor SmsProcessingCoordinator {
                     reason: "operation_interrupted"
                 )
             } catch let error as TransactionParserError {
-                return try await failExtractor(
+                let outcome = try await failExtractor(
                     &claim,
                     code: error.safeCode,
                     request: request,
                     startedAt: startedAt,
                     operation: operation,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             } catch is SmsContractAssetError {
-                return try await failExtractor(
+                let outcome = try await failExtractor(
                     &claim,
                     code: SmsContractAssetError.reasonCode,
                     request: request,
                     startedAt: startedAt,
                     operation: operation,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             } catch let error as SmsExtractorValidationError {
-                return try await failExtractor(
+                let outcome = try await failExtractor(
                     &claim,
                     code: error.reasonCode,
                     request: request,
                     startedAt: startedAt,
                     operation: operation,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             } catch {
-                return try await failExtractor(
+                let outcome = try await failExtractor(
                     &claim,
                     code: "runtime_unavailable",
                     request: request,
                     startedAt: startedAt,
                     operation: operation,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
             try await store.recordSelectorResponse(
-                operationID: operation.operationID,
+                claim,
                 response: response,
                 startedAt: startedAt
             )
+            let validator = SmsExtractorValidator()
             guard response.completion == "complete" else {
                 try await store.markSelectorInvalid(
-                    operationID: operation.operationID,
+                    claim,
                     safeErrorCode: "runtime_output_truncated"
                 )
-                return try await retain(
+                let partialFields = validator.collectGroundedFields(
+                    rawOutput: response.rawOutput,
+                    source: evidence.body,
+                    primaryCurrency: operation.configuration.currencyContext.primaryCurrency,
+                    enabledProfiles: operation.configuration.currencyContext.enabledProfileIDs
+                )
+                let outcome = try await retain(
                     &claim,
                     operation: operation,
                     reasons: ["runtime_output_truncated"],
+                    furthestStage: "extractor_execution",
+                    slmFields: partialFields,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
+            furthestStage = "extractor_validation"
             try await store.transition(claim, expected: .selectorRunning, to: .selectorRecorded)
             try await trace(&claim, "selector_execution", "completed", [], observer)
             let extraction: SmsExtractorResult
             do {
-                extraction = try SmsExtractorValidator().validate(
+                extraction = try validator.validate(
                     rawOutput: response.rawOutput,
                     source: evidence.body,
                     primaryCurrency: operation.configuration.currencyContext.primaryCurrency,
@@ -201,42 +256,66 @@ actor SmsProcessingCoordinator {
                 )
             } catch let error as SmsExtractorValidationError {
                 try await store.markSelectorInvalid(
-                    operationID: operation.operationID,
+                    claim,
                     safeErrorCode: error.reasonCode
                 )
                 try await trace(&claim, "selector_validation", "failed", [error.reasonCode], observer)
-                return try await retain(
+                let partialFields = validator.collectGroundedFields(
+                    rawOutput: response.rawOutput,
+                    source: evidence.body,
+                    primaryCurrency: operation.configuration.currencyContext.primaryCurrency,
+                    enabledProfiles: operation.configuration.currencyContext.enabledProfileIDs
+                )
+                let outcome = try await retain(
                     &claim,
                     operation: operation,
                     reasons: [error.reasonCode],
+                    furthestStage: "extractor_validation",
+                    slmFields: partialFields,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
             try await store.transition(claim, expected: .selectorRecorded, to: .validated)
             try await trace(&claim, "selector_validation", "completed", [], observer)
             claim = try await store.heartbeat(claim)
+            activeClaim = claim
             switch extraction.decision {
             case .none:
-                return try await settleNone(
+                let outcome = try await settleNone(
                     &claim,
                     extraction: extraction,
                     operation: operation,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             case .abstain:
-                return try await settleAbstain(
+                let outcome = try await settleAbstain(
                     &claim,
                     extraction: extraction,
                     operation: operation,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             case .posted:
-                return try await settlePosted(
+                furthestStage = "account_resolution"
+                let outcome = try await settlePosted(
                     &claim,
                     extraction: extraction,
                     operation: operation,
+                    analysis: analysis,
+                    source: evidence.body,
                     observer: observer
                 )
+                activeClaim = nil
+                return outcome
             }
         } catch is CancellationError {
             if let receipt = try? await store.stop(operationID: operation.operationID) {
@@ -252,8 +331,12 @@ actor SmsProcessingCoordinator {
                 reason: "operation_interrupted"
             )
         } catch {
-            return await retainWithoutClaim(
-                operation.operationID,
+            return await retainAfterFailure(
+                activeClaim: activeClaim,
+                operation: operation,
+                furthestStage: furthestStage,
+                analysis: latestAnalysis,
+                source: latestSourceBody,
                 reasons: ["operation_interrupted"]
             )
         }
@@ -265,10 +348,12 @@ actor SmsProcessingCoordinator {
         request: String,
         startedAt: Date,
         operation: SmsOperationSnapshot,
+        analysis: SmsAnalysis,
+        source: String,
         observer: any SmsProcessingObserver
     ) async throws -> SmsProcessingOutcome {
         try await store.recordSelectorFailure(
-            operationID: operation.operationID,
+            claim,
             runtimeProfileJSON: SmsFlatExtractionProjector.runtimeProfileJSON,
             requestJSON: request,
             safeErrorCode: code,
@@ -279,6 +364,10 @@ actor SmsProcessingCoordinator {
             &claim,
             operation: operation,
             reasons: [code],
+            furthestStage: "extractor_execution",
+            slmFields: [],
+            analysis: analysis,
+            source: source,
             observer: observer
         )
     }
@@ -302,7 +391,7 @@ actor SmsProcessingCoordinator {
             reasons: reasons
         )
         try await store.recordNormalizedResult(
-            operationID: operation.operationID,
+            claim,
             semanticResultJSON: result,
             decision: nil
         )
@@ -344,7 +433,8 @@ actor SmsProcessingCoordinator {
             account: account,
             duplicate: duplicate,
             gate: gate,
-            reasons: reasons
+            reasons: reasons,
+            retainedEvidence: nil
         )
         try await trace(&claim, "reconstruction", "completed", [], observer)
         try await store.recordGateDecision(
@@ -374,9 +464,17 @@ actor SmsProcessingCoordinator {
         _ claim: inout SmsOperationClaim,
         extraction: SmsExtractorResult,
         operation: SmsOperationSnapshot,
+        analysis: SmsAnalysis,
+        source: String,
         observer: any SmsProcessingObserver
     ) async throws -> SmsProcessingOutcome {
         let reasons = ["extractor_abstained"]
+        let retainedEvidence = SmsReviewProjection.retainedEvidenceJSONObject(
+            furthestStage: "extractor_validation",
+            slmFields: [],
+            analysis: analysis,
+            source: source
+        )
         try await recordResult(
             &claim,
             extraction: extraction,
@@ -385,13 +483,19 @@ actor SmsProcessingCoordinator {
             account: nil,
             duplicate: nil,
             gate: nil,
-            reasons: reasons
+            reasons: reasons,
+            retainedEvidence: retainedEvidence
         )
         try await trace(&claim, "reconstruction", "completed", [], observer)
         return try await retain(
             &claim,
             operation: operation,
             reasons: reasons,
+            furthestStage: "extractor_validation",
+            slmFields: [],
+            analysis: analysis,
+            source: source,
+            recordRetainedResult: false,
             observer: observer
         )
     }
@@ -400,6 +504,8 @@ actor SmsProcessingCoordinator {
         _ claim: inout SmsOperationClaim,
         extraction: SmsExtractorResult,
         operation: SmsOperationSnapshot,
+        analysis: SmsAnalysis,
+        source: String,
         observer: any SmsProcessingObserver
     ) async throws -> SmsProcessingOutcome {
         guard let transaction = extraction.transaction else {
@@ -468,6 +574,13 @@ actor SmsProcessingCoordinator {
         } else {
             reasons = Array(Set(reasons)).sorted()
         }
+        let partialFields = SmsReviewProjection.partialFields(from: transaction)
+        let retainedEvidence = SmsReviewProjection.retainedEvidenceJSONObject(
+            furthestStage: "persistence_gate",
+            slmFields: partialFields,
+            analysis: analysis,
+            source: source
+        )
         try await recordResult(
             &claim,
             extraction: extraction,
@@ -476,7 +589,8 @@ actor SmsProcessingCoordinator {
             account: account,
             duplicate: duplicate,
             gate: gate,
-            reasons: reasons
+            reasons: reasons,
+            retainedEvidence: retainedEvidence
         )
         try await trace(&claim, "reconstruction", "completed", [], observer)
         try await store.recordGateDecision(
@@ -511,6 +625,11 @@ actor SmsProcessingCoordinator {
             &claim,
             operation: operation,
             reasons: reasons,
+            furthestStage: "persistence_gate",
+            slmFields: partialFields,
+            analysis: analysis,
+            source: source,
+            recordRetainedResult: false,
             observer: observer
         )
     }
@@ -523,7 +642,8 @@ actor SmsProcessingCoordinator {
         account: [String: Any]?,
         duplicate: [String: Any]?,
         gate: [String: Any]?,
-        reasons: [String]
+        reasons: [String],
+        retainedEvidence: [String: Any]?
     ) async throws {
         let result = try SmsProcessingJSON.result(
             status: status,
@@ -532,10 +652,11 @@ actor SmsProcessingCoordinator {
             account: account,
             duplicate: duplicate,
             gate: gate,
-            reasons: reasons
+            reasons: reasons,
+            retainedEvidence: retainedEvidence
         )
         try await store.recordNormalizedResult(
-            operationID: operation.operationID,
+            claim,
             semanticResultJSON: result,
             decision: extraction.decision.rawValue
         )
@@ -571,12 +692,40 @@ actor SmsProcessingCoordinator {
         _ claim: inout SmsOperationClaim,
         operation: SmsOperationSnapshot,
         reasons: [String],
+        furthestStage: String,
+        slmFields: [SmsReviewPartialField],
+        analysis: SmsAnalysis?,
+        source: String,
+        recordRetainedResult: Bool = true,
         observer: any SmsProcessingObserver
     ) async throws -> SmsProcessingOutcome {
         let safeReasons =
             reasons.isEmpty
             ? ["persistence_triage_requires_review"]
             : Array(Set(reasons)).sorted()
+        if recordRetainedResult {
+            let retainedEvidence = SmsReviewProjection.retainedEvidenceJSONObject(
+                furthestStage: furthestStage,
+                slmFields: slmFields,
+                analysis: analysis,
+                source: source
+            )
+            let result = try SmsProcessingJSON.result(
+                status: "review",
+                extraction: nil,
+                operation: operation,
+                account: nil,
+                duplicate: nil,
+                gate: nil,
+                reasons: safeReasons,
+                retainedEvidence: retainedEvidence
+            )
+            try await store.recordNormalizedResult(
+                claim,
+                semanticResultJSON: result,
+                decision: nil
+            )
+        }
         try await trace(&claim, "settlement", "retained", safeReasons, observer)
         let reviewID = try await store.retainForReview(claim, reasons: safeReasons)
         return .retainedForReview(
@@ -584,6 +733,66 @@ actor SmsProcessingCoordinator {
             reviewCaseID: reviewID,
             reasons: safeReasons
         )
+    }
+
+    private func retainAfterFailure(
+        activeClaim: SmsOperationClaim?,
+        operation: SmsOperationSnapshot,
+        furthestStage: String,
+        analysis: SmsAnalysis?,
+        source: String?,
+        reasons: [String]
+    ) async -> SmsProcessingOutcome {
+        if let settled = try? await store.settledOutcome(operationID: operation.operationID) {
+            return settled
+        }
+        if let claim = activeClaim {
+            if let source,
+                let resultJSON = try? SmsProcessingJSON.result(
+                    status: "review",
+                    extraction: nil,
+                    operation: operation,
+                    account: nil,
+                    duplicate: nil,
+                    gate: nil,
+                    reasons: reasons,
+                    retainedEvidence: SmsReviewProjection.retainedEvidenceJSONObject(
+                        furthestStage: furthestStage,
+                        slmFields: [],
+                        analysis: analysis,
+                        source: source
+                    )
+                )
+            {
+                try? await store.recordNormalizedResult(
+                    claim,
+                    semanticResultJSON: resultJSON,
+                    decision: nil
+                )
+            }
+            do {
+                let reviewID = try await store.retainForReview(claim, reasons: reasons)
+                return .retainedForReview(
+                    operationID: operation.operationID,
+                    reviewCaseID: reviewID,
+                    reasons: reasons
+                )
+            } catch SmsProcessingStoreError.lostOwnership,
+                SmsProcessingStoreError.operationNotFound
+            {
+                if let settled = try? await store.settledOutcome(operationID: operation.operationID) {
+                    return settled
+                }
+                return .retryableFailure(
+                    operationID: operation.operationID,
+                    reviewCaseID: nil,
+                    reason: reasons.first ?? "operation_interrupted"
+                )
+            } catch {
+                // Fall through to best-effort unowned retention.
+            }
+        }
+        return await retainWithoutClaim(operation.operationID, reasons: reasons)
     }
 
     private func retainWithoutClaim(

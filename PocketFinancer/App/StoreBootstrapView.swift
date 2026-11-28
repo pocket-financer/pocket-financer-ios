@@ -78,6 +78,7 @@ struct StoreBootstrapView: View {
         #if DEBUG
             guard ProcessInfo.processInfo.arguments.contains("--ui-testing-reset") else { return }
             UserDefaults.standard.set(false, forKey: AppPreferenceKey.completedOnboarding)
+            PrimaryCurrencySettings.reset()
             try? LocalDataService(context: database.container.mainContext).eraseAll()
         #endif
     }

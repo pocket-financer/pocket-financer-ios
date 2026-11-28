@@ -44,7 +44,6 @@ enum AlertIngestionError: Error, Equatable {
 
 @MainActor
 final class AlertIngestionService {
-    static let duplicateWindow: TimeInterval = 15
     static let automaticAttemptLimit = 3
     static let maximumBodyBytes = 16_384
     static let maximumSenderBytes = 512
@@ -72,9 +71,22 @@ final class AlertIngestionService {
         let transactionWasEdited: Bool?
     }
 
+    private struct CommittedAlertSync: Sendable {
+        let status: AlertStatus
+        let lastErrorCode: String?
+        let rejectionCode: String?
+        let updatedAt: Date
+        let erasedEvidence: Bool
+    }
+
+    private struct ProcessingAttemptResult: Sendable {
+        let receipt: IngestionReceipt
+        let didExecute: Bool
+    }
+
     private enum PreparedProcessing {
-        case receipt(IngestionReceipt)
-        case current(SmsOperationSnapshot, SmsOperationClaim)
+        case receipt(IngestionReceipt, CommittedAlertSync?)
+        case current(SmsOperationSnapshot, SmsOperationClaim, Int, Date)
     }
 
     private static var processingClaims: [UUID: ProcessingClaim] = [:]
@@ -173,7 +185,13 @@ final class AlertIngestionService {
             sourceApplication: sourceApplication
         )
 
-        let duplicate = try findDuplicate(contentDigest: digest, receivedAt: resolvedDate)
+        if let existing = try findAlert(sourceIdentity: sourceIdentity) {
+            return IngestionReceipt(
+                alertID: existing.id,
+                disposition: Self.currentDisposition(for: existing)
+            )
+        }
+
         let alert = InboxAlert(
             sourceIdentity: sourceIdentity,
             contentDigest: digest,
@@ -194,16 +212,6 @@ final class AlertIngestionService {
                 payloadJSON: metadataPayload,
                 occurredAt: alert.createdAt
             ))
-
-        if let duplicate {
-            // Equal content within a short time window is only a heuristic.
-            // Preserve both admissions and require an explicit user decision.
-            alert.status = .needsReview
-            alert.duplicateOfAlertID = duplicate.id
-            alert.lastErrorCode = "possible_duplicate_heuristic_match"
-            try save()
-            return IngestionReceipt(alertID: alert.id, disposition: .duplicate)
-        }
 
         // This is the crash-recovery boundary: evidence is committed before filtering
         // or model work, and a successful return always means it can be processed later.
@@ -230,8 +238,8 @@ final class AlertIngestionService {
         }
 
         do {
-            return try await classifyAndProcessIfClaimed(alert, allowBeyondAutomaticAttemptLimit: true)
-                ?? queued
+            return try await classifyAndProcessIfClaimed(alert, allowBeyondAutomaticAttemptLimit: true)?
+                .receipt ?? queued
         } catch {
             // The enqueue save already succeeded. Never tell the foreground owner that
             // evidence was not saved merely because a later processing save failed.
@@ -258,7 +266,7 @@ final class AlertIngestionService {
                 retryParentOperationID: parentOperationID,
                 retryConfigurationMode: configurationMode,
                 isOwnerRetry: true
-            )
+            )?.receipt
                 ?? IngestionReceipt(alertID: alert.id, disposition: .alreadyProcessing)
         } catch {
             return IngestionReceipt(alertID: alert.id, disposition: .processingIncomplete)
@@ -301,13 +309,16 @@ final class AlertIngestionService {
         for alertID in eligibleAlertIDs {
             guard !Task.isCancelled, Self.processingEpoch == batchEpoch else { break }
             guard let alert = try? findAlert(id: alertID) else { continue }
+            let isOwnerRetry = includeNeedsReview && alert.status == .needsReview
             do {
-                if let receipt = try await classifyAndProcessIfClaimed(
+                if let result = try await classifyAndProcessIfClaimed(
                     alert,
                     allowBeyondAutomaticAttemptLimit: includeNeedsReview,
-                    expectedProcessingEpoch: batchEpoch
-                ), receipt.disposition != .alreadyProcessing,
-                    receipt.disposition != .processingIncomplete
+                    expectedProcessingEpoch: batchEpoch,
+                    isOwnerRetry: isOwnerRetry
+                ), result.didExecute,
+                    result.receipt.disposition != .alreadyProcessing,
+                    result.receipt.disposition != .processingIncomplete
                 {
                     completed += 1
                 }
@@ -332,7 +343,7 @@ final class AlertIngestionService {
         retryParentOperationID: UUID? = nil,
         retryConfigurationMode: String = "current",
         isOwnerRetry: Bool = false
-    ) async throws -> IngestionReceipt? {
+    ) async throws -> ProcessingAttemptResult? {
         let alertID = alert.id
         guard
             let preflightAlert = try findAlert(id: alertID),
@@ -349,9 +360,12 @@ final class AlertIngestionService {
             !Task.isCancelled
         else { return nil }
         guard try ownerState(for: currentAlert) == ownerStateAtEntry else {
-            return IngestionReceipt(
-                alertID: alertID,
-                disposition: Self.currentDisposition(for: currentAlert)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(
+                    alertID: alertID,
+                    disposition: Self.currentDisposition(for: currentAlert)
+                ),
+                didExecute: false
             )
         }
         guard
@@ -382,28 +396,47 @@ final class AlertIngestionService {
                 )
             }
         } catch SmsProcessingStoreError.admissionBusy {
-            return IngestionReceipt(alertID: alertID, disposition: .alreadyProcessing)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .alreadyProcessing),
+                didExecute: false
+            )
         } catch SmsProcessingStoreError.sourceConflict {
-            return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .processingIncomplete),
+                didExecute: false
+            )
         }
-        if case .receipt(let receipt) = prepared { return receipt }
+        if case .receipt(let receipt, let sync) = prepared {
+            if let sync, !context.hasChanges {
+                applyCommittedSync(sync, to: currentAlert)
+            }
+            return ProcessingAttemptResult(receipt: receipt, didExecute: false)
+        }
 
-        let processingStore = SmsProcessingStore(modelContainer: context.container)
+        let processingStore = SmsProcessingStore.shared(for: context.container)
         let sourceReference = AdmittedMessageRef(
             sourceID: currentAlert.id,
             admissionReceiptID: currentAlert.id,
             sourceDigest: CanonicalJSON.sha256(currentAlert.rawBody)
         )
         let outcome: SmsProcessingOutcome
+        let committedAttemptCount: Int
+        let committedAttemptAt: Date
         switch prepared {
-        case .receipt(let receipt):
-            return receipt
-        case .current(let snapshot, let initialClaim):
+        case .receipt(let receipt, let sync):
+            if let sync, !context.hasChanges {
+                applyCommittedSync(sync, to: currentAlert)
+            }
+            return ProcessingAttemptResult(receipt: receipt, didExecute: false)
+        case .current(let snapshot, let initialClaim, let attemptCount, let attemptAt):
+            committedAttemptCount = attemptCount
+            committedAttemptAt = attemptAt
             let coordinator = SmsProcessingCoordinator(
                 store: processingStore,
                 extractor: smsExtractor,
                 accountResolver: { evidence in
-                    try GroundedAccountResolver(context: self.context).resolve(evidence)
+                    let lookupContext = ModelContext(self.context.container)
+                    return try GroundedAccountResolver(context: lookupContext).resolve(evidence)
                 }
             )
             outcome = await coordinator.process(
@@ -414,8 +447,13 @@ final class AlertIngestionService {
             )
         }
         guard Self.ownsClaim(for: alertID, claim: claim) else {
-            return IngestionReceipt(alertID: alertID, disposition: .processingIncomplete)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .processingIncomplete),
+                didExecute: false
+            )
         }
+        currentAlert.attemptCount = committedAttemptCount
+        currentAlert.lastAttemptAt = committedAttemptAt
         switch outcome {
         case .terminallyDiscarded(_, let reason):
             // The coordinator uses an independent model context. Mirror the erasure in
@@ -428,13 +466,19 @@ final class AlertIngestionService {
             currentAlert.lastErrorCode = reason
             currentAlert.updatedAt = .now
             try save()
-            return IngestionReceipt(alertID: alertID, disposition: .rejected)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .rejected),
+                didExecute: true
+            )
         case .retainedForReview(_, _, let reasons):
             currentAlert.status = .needsReview
             currentAlert.lastErrorCode = reasons.first
             currentAlert.updatedAt = .now
             try save()
-            return IngestionReceipt(alertID: alertID, disposition: .needsReview)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .needsReview),
+                didExecute: true
+            )
         case .persisted(_, let transactionIDs, _):
             currentAlert.status = .imported
             currentAlert.transactionID = transactionIDs.first ?? currentAlert.transactionID
@@ -443,13 +487,19 @@ final class AlertIngestionService {
             currentAlert.parserName = SmsContractAssets.releaseID
             currentAlert.updatedAt = .now
             try save()
-            return IngestionReceipt(alertID: alertID, disposition: .imported)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .imported),
+                didExecute: true
+            )
         case .retryableFailure(_, _, let reason), .stopped(_, _, let reason):
             currentAlert.status = .needsReview
             currentAlert.lastErrorCode = reason
             currentAlert.updatedAt = .now
             try save()
-            return IngestionReceipt(alertID: alertID, disposition: .needsReview)
+            return ProcessingAttemptResult(
+                receipt: IngestionReceipt(alertID: alertID, disposition: .needsReview),
+                didExecute: true
+            )
         }
     }
 
@@ -481,8 +531,11 @@ final class AlertIngestionService {
         if [.imported, .rejected, .duplicate].contains(durableAlert.status) {
             return .receipt(
                 IngestionReceipt(
-                    alertID: sourceID, disposition: Self.currentDisposition(for: durableAlert)
-                ))
+                    alertID: sourceID,
+                    disposition: Self.currentDisposition(for: durableAlert)
+                ),
+                nil
+            )
         }
 
         let operations = try admissionContext.fetch(
@@ -499,41 +552,82 @@ final class AlertIngestionService {
             $0.settledAt == nil && $0.ownerToken != nil
                 && $0.claimExpiresAt.map { $0 > now } == true
         }) {
-            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .alreadyProcessing))
+            return .receipt(
+                IngestionReceipt(alertID: sourceID, disposition: .alreadyProcessing),
+                nil
+            )
         }
         let latest = operations.first
+        if let latest {
+            switch latest.state {
+            case .persisted:
+                durableAlert.status = .imported
+                durableAlert.lastErrorCode = nil
+                durableAlert.updatedAt = now
+                try saveAdmission(admissionContext)
+                return .receipt(
+                    IngestionReceipt(alertID: sourceID, disposition: .imported),
+                    CommittedAlertSync(
+                        status: .imported,
+                        lastErrorCode: nil,
+                        rejectionCode: durableAlert.rejectionCode,
+                        updatedAt: now,
+                        erasedEvidence: false
+                    )
+                )
+            case .discarded:
+                durableAlert.eraseSensitiveEvidence(now: now)
+                durableAlert.status = .rejected
+                durableAlert.rejectionCode = latest.retentionState
+                durableAlert.lastErrorCode = latest.tombstoneReason
+                try saveAdmission(admissionContext)
+                return .receipt(
+                    IngestionReceipt(alertID: sourceID, disposition: .rejected),
+                    CommittedAlertSync(
+                        status: .rejected,
+                        lastErrorCode: latest.tombstoneReason,
+                        rejectionCode: latest.retentionState,
+                        updatedAt: now,
+                        erasedEvidence: true
+                    )
+                )
+            default:
+                break
+            }
+        }
         if let latest, !isOwnerRetry {
             switch latest.state {
             case .retainedReview:
-                alert.status = .needsReview
+                durableAlert.status = .needsReview
                 let operationID = latest.id
                 let review = try admissionContext.fetch(
                     FetchDescriptor<SmsReviewCase>(
                         predicate: #Predicate { $0.currentOperationID == operationID }
                     )
                 ).first
-                alert.lastErrorCode = review?.reasonCodesRawValue
+                let errorCode = review?.reasonCodesRawValue
                     .split(separator: "\n").first.map(String.init)
-                alert.updatedAt = now
-                try save()
-                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
-            case .persisted:
-                alert.status = .imported
-                alert.lastErrorCode = nil
-                alert.updatedAt = now
-                try save()
-                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .imported))
-            case .discarded:
-                alert.eraseSensitiveEvidence()
-                alert.status = .rejected
-                alert.rejectionCode = latest.retentionState
-                alert.lastErrorCode = latest.tombstoneReason
-                try save()
-                return .receipt(IngestionReceipt(alertID: sourceID, disposition: .rejected))
+                durableAlert.lastErrorCode = errorCode
+                durableAlert.updatedAt = now
+                try saveAdmission(admissionContext)
+                return .receipt(
+                    IngestionReceipt(alertID: sourceID, disposition: .needsReview),
+                    CommittedAlertSync(
+                        status: .needsReview,
+                        lastErrorCode: errorCode,
+                        rejectionCode: durableAlert.rejectionCode,
+                        updatedAt: now,
+                        erasedEvidence: false
+                    )
+                )
             default:
                 // Frozen decoding/executable-adapter restoration is not yet supported.
                 // Keep the original operation intact and make the owner retry explicit.
-                return try requireOperationRecovery(alert, now: now)
+                return try requireOperationRecovery(
+                    durableAlert,
+                    admissionContext: admissionContext,
+                    now: now
+                )
             }
         }
         if isOwnerRetry, let latest {
@@ -545,7 +639,13 @@ final class AlertIngestionService {
             if latest.settledAt == nil {
                 guard latest.ownerToken == nil,
                     [.ready, .interrupted, .retryWait].contains(latest.state)
-                else { return try requireOperationRecovery(alert, now: now) }
+                else {
+                    return try requireOperationRecovery(
+                        durableAlert,
+                        admissionContext: admissionContext,
+                        now: now
+                    )
+                }
             }
         } else if retryParentOperationID != nil {
             throw SmsProcessingStoreError.operationNotFound
@@ -555,43 +655,74 @@ final class AlertIngestionService {
         if !allowBeyondAutomaticAttemptLimit,
             durableAlert.attemptCount >= Self.automaticAttemptLimit
         {
-            alert.status = .needsReview
-            alert.lastErrorCode = "automatic_retry_limit_reached"
-            alert.updatedAt = now
-            try save()
-            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+            durableAlert.status = .needsReview
+            durableAlert.lastErrorCode = "automatic_retry_limit_reached"
+            durableAlert.updatedAt = now
+            try saveAdmission(admissionContext)
+            return .receipt(
+                IngestionReceipt(alertID: sourceID, disposition: .needsReview),
+                CommittedAlertSync(
+                    status: .needsReview,
+                    lastErrorCode: "automatic_retry_limit_reached",
+                    rejectionCode: durableAlert.rejectionCode,
+                    updatedAt: now,
+                    erasedEvidence: false
+                )
+            )
         }
         guard let currency = PrimaryCurrencySettings.confirmedCode else {
-            alert.status = .pending
-            alert.lastErrorCode = "configuration_primary_currency_required"
-            alert.updatedAt = now
-            try save()
-            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .queued))
+            durableAlert.status = .pending
+            durableAlert.lastErrorCode = "configuration_primary_currency_required"
+            durableAlert.updatedAt = now
+            try saveAdmission(admissionContext)
+            return .receipt(
+                IngestionReceipt(alertID: sourceID, disposition: .queued),
+                CommittedAlertSync(
+                    status: .pending,
+                    lastErrorCode: "configuration_primary_currency_required",
+                    rejectionCode: durableAlert.rejectionCode,
+                    updatedAt: now,
+                    erasedEvidence: false
+                )
+            )
         }
         let settings = try retryConfiguration(
             parentOperationID: parentID,
             mode: retryConfigurationMode,
-            currentPrimaryCurrency: currency
+            currentPrimaryCurrency: currency,
+            context: admissionContext
         )
         let originalContract = try originalConfigurationContract(
-            parentOperationID: parentID, mode: retryConfigurationMode
+            parentOperationID: parentID,
+            mode: retryConfigurationMode,
+            context: admissionContext
         )
         if let originalContract, originalContract != SmsContractAssets.releaseID {
-            alert.status = .needsReview
-            alert.lastErrorCode = "original_configuration_adapter_unavailable"
-            alert.updatedAt = now
-            try save()
-            return .receipt(IngestionReceipt(alertID: sourceID, disposition: .needsReview))
+            durableAlert.status = .needsReview
+            durableAlert.lastErrorCode = "original_configuration_adapter_unavailable"
+            durableAlert.updatedAt = now
+            try saveAdmission(admissionContext)
+            return .receipt(
+                IngestionReceipt(alertID: sourceID, disposition: .needsReview),
+                CommittedAlertSync(
+                    status: .needsReview,
+                    lastErrorCode: "original_configuration_adapter_unavailable",
+                    rejectionCode: durableAlert.rejectionCode,
+                    updatedAt: now,
+                    erasedEvidence: false
+                )
+            )
         }
-        alert.status = .processing
-        alert.attemptCount = durableAlert.attemptCount + 1
-        alert.lastAttemptAt = now
-        alert.updatedAt = now
-        try save()
+        let nextAttemptCount = durableAlert.attemptCount + 1
+        durableAlert.status = .processing
+        durableAlert.attemptCount = nextAttemptCount
+        durableAlert.lastAttemptAt = now
+        durableAlert.updatedAt = now
+        try saveAdmission(admissionContext)
         let trigger =
             isOwnerRetry
             ? "retry" : (allowBeyondAutomaticAttemptLimit ? "foreground_or_user" : "automatic_recovery")
-        let snapshot = try SmsOperationSnapshotFactory(context: context).create(
+        let snapshot = try SmsOperationSnapshotFactory(context: admissionContext).create(
             sourceAlertID: sourceID,
             parentOperationID: parentID,
             trigger: trigger,
@@ -601,23 +732,48 @@ final class AlertIngestionService {
         )
         let claim = try SmsProcessingStore.claimForAdmission(
             operationID: snapshot.operationID,
-            context: context
+            context: admissionContext
         )
-        return .current(snapshot, claim)
+        return .current(snapshot, claim, nextAttemptCount, now)
     }
 
-    private func requireOperationRecovery(_ alert: InboxAlert, now: Date) throws -> PreparedProcessing {
+    private func requireOperationRecovery(
+        _ alert: InboxAlert,
+        admissionContext: ModelContext,
+        now: Date
+    ) throws -> PreparedProcessing {
         alert.status = .needsReview
         alert.lastErrorCode = "saved_operation_requires_explicit_retry"
         alert.updatedAt = now
-        try save()
-        return .receipt(IngestionReceipt(alertID: alert.id, disposition: .processingIncomplete))
+        try saveAdmission(admissionContext)
+        return .receipt(
+            IngestionReceipt(alertID: alert.id, disposition: .processingIncomplete),
+            CommittedAlertSync(
+                status: .needsReview,
+                lastErrorCode: "saved_operation_requires_explicit_retry",
+                rejectionCode: alert.rejectionCode,
+                updatedAt: now,
+                erasedEvidence: false
+            )
+        )
+    }
+
+    private func applyCommittedSync(_ sync: CommittedAlertSync, to alert: InboxAlert) {
+        if sync.erasedEvidence {
+            alert.eraseSensitiveEvidence(now: sync.updatedAt)
+        }
+        alert.status = sync.status
+        alert.lastErrorCode = sync.lastErrorCode
+        alert.rejectionCode = sync.rejectionCode
+        alert.updatedAt = sync.updatedAt
+        try? context.save()
     }
 
     private func retryConfiguration(
         parentOperationID: UUID?,
         mode: String,
-        currentPrimaryCurrency: String
+        currentPrimaryCurrency: String,
+        context lookupContext: ModelContext
     ) throws -> (primaryCurrency: String, enabledProfiles: [String]) {
         guard mode == "original", let parentOperationID else {
             return (
@@ -627,7 +783,7 @@ final class AlertIngestionService {
         }
         let parentID = parentOperationID
         guard
-            let operation = try context.fetch(
+            let operation = try lookupContext.fetch(
                 FetchDescriptor<SmsProcessingOperation>(
                     predicate: #Predicate { $0.id == parentID }
                 )
@@ -647,12 +803,13 @@ final class AlertIngestionService {
 
     private func originalConfigurationContract(
         parentOperationID: UUID?,
-        mode: String
+        mode: String,
+        context lookupContext: ModelContext
     ) throws -> String? {
         guard mode == "original", let parentOperationID else { return nil }
         let parentID = parentOperationID
         guard
-            let operation = try context.fetch(
+            let operation = try lookupContext.fetch(
                 FetchDescriptor<SmsProcessingOperation>(
                     predicate: #Predicate { $0.id == parentID }
                 )
@@ -665,13 +822,15 @@ final class AlertIngestionService {
         return contract
     }
 
-    private func findDuplicate(contentDigest: String, receivedAt: Date) throws -> InboxAlert? {
-        let descriptor = FetchDescriptor<InboxAlert>(sortBy: [SortDescriptor(\InboxAlert.receivedAt, order: .reverse)])
-        return try context.fetch(descriptor).first { candidate in
-            candidate.contentDigest == contentDigest
-                && candidate.status != .duplicate
-                && abs(candidate.receivedAt.timeIntervalSince(receivedAt)) <= Self.duplicateWindow
-        }
+    private func findAlert(sourceIdentity: String) throws -> InboxAlert? {
+        let targetIdentity = sourceIdentity
+        var descriptor = FetchDescriptor<InboxAlert>(
+            predicate: #Predicate { alert in
+                alert.sourceIdentity == targetIdentity
+            }
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first
     }
 
     private func findAlert(id: UUID) throws -> InboxAlert? {
@@ -738,6 +897,15 @@ final class AlertIngestionService {
             try contextSaver(context)
         } catch {
             context.rollback()
+            throw AlertIngestionError.persistenceFailed
+        }
+    }
+
+    private func saveAdmission(_ admissionContext: ModelContext) throws {
+        do {
+            try contextSaver(admissionContext)
+        } catch {
+            admissionContext.rollback()
             throw AlertIngestionError.persistenceFailed
         }
     }

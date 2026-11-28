@@ -9,7 +9,7 @@ struct DecisionTraceTimeline: View {
                 ContentUnavailableView(
                     "No native decision trace",
                     systemImage: "timeline.selection",
-                    description: Text("Legacy processing details remain available below.")
+                    description: Text("Processing details remain available below.")
                 )
             } else {
                 ForEach(events, id: \.id) { event in

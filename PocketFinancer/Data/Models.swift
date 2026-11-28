@@ -93,15 +93,12 @@ final class InboxAlert {
         set { originRawValue = newValue.rawValue }
     }
 
-    func eraseSensitiveEvidence() {
-        let erasedIdentity = "erased:\(id.uuidString.lowercased())"
-        sourceIdentity = erasedIdentity
-        contentDigest = erasedIdentity
+    func eraseSensitiveEvidence(now: Date = .now) {
         sender = ""
         rawBody = ""
         sourceApplication = nil
         normalizedSender = ""
-        updatedAt = .now
+        updatedAt = now
     }
 }
 

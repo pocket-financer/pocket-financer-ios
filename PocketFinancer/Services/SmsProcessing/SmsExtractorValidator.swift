@@ -10,22 +10,7 @@ nonisolated struct SmsExtractorValidator {
         primaryCurrency: String,
         enabledProfiles: [String] = ["core-en", "india"]
     ) throws -> SmsExtractorResult {
-        guard rawOutput.utf8.count <= Self.rawOutputByteLimit else {
-            throw SmsExtractorValidationError.outputTruncated
-        }
-        guard !rawOutput.isEmpty, let data = rawOutput.data(using: .utf8) else {
-            throw SmsExtractorValidationError.malformedJSON
-        }
-        try StrictExtractorJSON.validateOneDocument(rawOutput)
-        let decoded: Any
-        do {
-            decoded = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
-        } catch {
-            throw SmsExtractorValidationError.malformedJSON
-        }
-        guard let object = decoded as? [String: Any] else {
-            throw SmsExtractorValidationError.outputNotObject
-        }
+        let object = try decodeStrictRootObject(rawOutput)
         guard let rawDecision = object["decision"] as? String else {
             throw SmsExtractorValidationError.decisionTypeInvalid
         }
@@ -70,6 +55,176 @@ nonisolated struct SmsExtractorValidator {
         )
     }
 
+    /// Independently validates fields from one strict posted JSON document without
+    /// repairing or accepting an invalid complete extraction.
+    func collectGroundedFields(
+        rawOutput: String,
+        source: String,
+        primaryCurrency: String,
+        enabledProfiles: [String] = ["core-en", "india"]
+    ) -> [SmsReviewPartialField] {
+        guard
+            let object = try? decodeStrictRootObject(rawOutput),
+            (object["decision"] as? String) == "posted"
+        else { return [] }
+
+        var fields: [SmsReviewPartialField] = []
+        if let partial = partialAmount(
+            object["amount"],
+            source: source,
+            primaryCurrency: primaryCurrency,
+            enabledProfiles: enabledProfiles
+        ) {
+            fields.append(partial)
+        }
+        if let partial = partialDirection(object["direction"], source: source) {
+            fields.append(partial)
+        }
+        if let partial = partialAccount(object["account"], source: source) {
+            fields.append(partial)
+        }
+        if let partial = partialCounterparty(object["counterparty"], source: source) {
+            fields.append(partial)
+        }
+        return fields
+    }
+
+    private func decodeStrictRootObject(_ rawOutput: String) throws -> [String: Any] {
+        guard rawOutput.utf8.count <= Self.rawOutputByteLimit else {
+            throw SmsExtractorValidationError.outputTruncated
+        }
+        guard !rawOutput.isEmpty, let data = rawOutput.data(using: .utf8) else {
+            throw SmsExtractorValidationError.malformedJSON
+        }
+        try StrictExtractorJSON.validateOneDocument(rawOutput)
+        let decoded: Any
+        do {
+            decoded = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        } catch {
+            throw SmsExtractorValidationError.malformedJSON
+        }
+        guard let object = decoded as? [String: Any] else {
+            throw SmsExtractorValidationError.outputNotObject
+        }
+        return object
+    }
+
+    private func partialAmount(
+        _ raw: Any?,
+        source: String,
+        primaryCurrency: String,
+        enabledProfiles: [String]
+    ) -> SmsReviewPartialField? {
+        guard let value = raw as? [String: Any],
+            Set(value.keys) == Set(["value", "currency", "evidence"]),
+            let declared = value["value"] as? String,
+            !declared.isEmpty,
+            let currency = value["currency"] as? String,
+            !currency.isEmpty,
+            let span = try? evidence(value["evidence"], source: source)
+        else { return nil }
+
+        let normalized: SmsPartialNormalizedValue? =
+            if let validated = try? validateNormalizedAmount(
+                declared: declared,
+                currency: currency,
+                span: span,
+                primaryCurrency: primaryCurrency,
+                enabledProfiles: enabledProfiles
+            ) {
+                .amount(SmsNormalizedAmountValue(minorUnits: validated.minor, currency: validated.currency))
+            } else {
+                nil
+            }
+        return SmsReviewPartialField(
+            field: .amount,
+            sourceSpan: span,
+            normalizedValue: normalized,
+            validationState: normalized == nil ? .groundedOnly : .valid,
+            originatingStage: normalized == nil ? "extractor_validation" : "normalization",
+            origin: .slm
+        )
+    }
+
+    private func partialDirection(_ raw: Any?, source: String) -> SmsReviewPartialField? {
+        guard let value = raw as? [String: Any],
+            Set(value.keys) == Set(["value", "evidence"]),
+            let declared = value["value"] as? String,
+            !declared.isEmpty,
+            let span = try? evidence(value["evidence"], source: source)
+        else { return nil }
+
+        let normalized: SmsPartialNormalizedValue? =
+            if let direction = SmsExtractorDirection(rawValue: declared),
+                SmsExtractorNormalizer.directionGrounded(direction: direction.rawValue, text: span.text)
+            {
+                .direction(direction)
+            } else {
+                nil
+            }
+        return SmsReviewPartialField(
+            field: .direction,
+            sourceSpan: span,
+            normalizedValue: normalized,
+            validationState: normalized == nil ? .groundedOnly : .valid,
+            originatingStage: normalized == nil ? "extractor_validation" : "normalization",
+            origin: .slm
+        )
+    }
+
+    private func partialAccount(_ raw: Any?, source: String) -> SmsReviewPartialField? {
+        guard let value = raw as? [String: Any],
+            Set(value.keys) == Set(["reference", "evidence"]),
+            let declared = value["reference"] as? String,
+            !declared.isEmpty,
+            let span = try? evidence(value["evidence"], source: source)
+        else { return nil }
+
+        let normalized: SmsPartialNormalizedValue? =
+            if let normalizedAccount = SmsExtractorNormalizer.normalizeAccount(span.text),
+                SmsExtractorNormalizer.normalizeAccount(declared) == normalizedAccount
+            {
+                .account(normalizedAccount)
+            } else {
+                nil
+            }
+        return SmsReviewPartialField(
+            field: .account,
+            sourceSpan: span,
+            normalizedValue: normalized,
+            validationState: normalized == nil ? .groundedOnly : .valid,
+            originatingStage: normalized == nil ? "extractor_validation" : "normalization",
+            origin: .slm
+        )
+    }
+
+    private func partialCounterparty(_ raw: Any?, source: String) -> SmsReviewPartialField? {
+        guard let raw, !(raw is NSNull) else { return nil }
+        guard let value = raw as? [String: Any],
+            Set(value.keys) == Set(["value", "evidence"]),
+            let declared = value["value"] as? String,
+            !declared.isEmpty,
+            let span = try? evidence(value["evidence"], source: source)
+        else { return nil }
+
+        let normalized: SmsPartialNormalizedValue? =
+            if let normalizedCounterparty = SmsExtractorNormalizer.normalizeCounterparty(span.text),
+                SmsExtractorNormalizer.normalizeCounterparty(declared) == normalizedCounterparty
+            {
+                .counterparty(normalizedCounterparty)
+            } else {
+                nil
+            }
+        return SmsReviewPartialField(
+            field: .counterparty,
+            sourceSpan: span,
+            normalizedValue: normalized,
+            validationState: normalized == nil ? .groundedOnly : .valid,
+            originatingStage: normalized == nil ? "extractor_validation" : "normalization",
+            origin: .slm
+        )
+    }
+
     private func amount(
         _ raw: Any?,
         source: String,
@@ -81,15 +236,28 @@ nonisolated struct SmsExtractorValidator {
             let declared = value["value"] as? String,
             let currency = value["currency"] as? String
         else { throw SmsExtractorValidationError.amountInvalid }
+        let span = try evidence(value["evidence"], source: source)
+        let validated = try validateNormalizedAmount(
+            declared: declared,
+            currency: currency,
+            span: span,
+            primaryCurrency: primaryCurrency,
+            enabledProfiles: enabledProfiles
+        )
+        return (validated.minor, validated.currency, span)
+    }
+
+    private func validateNormalizedAmount(
+        declared: String,
+        currency: String,
+        span: UnicodeScalarSpan,
+        primaryCurrency: String,
+        enabledProfiles: [String]
+    ) throws -> (minor: Int64, currency: String) {
         guard currency == currency.uppercased(), CurrencyProfileRegistry.scales[currency] != nil else {
             throw SmsExtractorValidationError.currencyInvalid
         }
-        let span = try evidence(value["evidence"], source: source)
-        let match = try onlyMoney(in: span.text)
-        let grounded = try SmsExtractorNormalizer.minorUnits(
-            decimal: match.replacingOccurrences(of: ",", with: ""),
-            currency: currency
-        )
+        let grounded = try SmsExtractorNormalizer.minorUnits(evidenceText: span.text, currency: currency)
         let declaredMinor = try SmsExtractorNormalizer.minorUnits(decimal: declared, currency: currency)
         guard grounded == declaredMinor else {
             throw SmsExtractorValidationError.amountValueDisagreement
@@ -100,7 +268,7 @@ nonisolated struct SmsExtractorValidator {
             primaryCurrency: primaryCurrency,
             enabledProfiles: enabledProfiles
         )
-        return (grounded, currency, span)
+        return (grounded, currency)
     }
 
     private func validateCurrencyGrounding(
@@ -109,7 +277,9 @@ nonisolated struct SmsExtractorValidator {
         primaryCurrency: String,
         enabledProfiles: [String]
     ) throws {
-        guard !enabledProfiles.isEmpty,
+        guard
+            CurrencyProfileRegistry.scales[primaryCurrency] != nil,
+            !enabledProfiles.isEmpty,
             enabledProfiles.allSatisfy({ ["core-en", "india"].contains($0) })
         else { throw SmsExtractorValidationError.currencyInvalid }
         let normalized = SmsExtractorNormalizer.frozenCaseFold(
@@ -160,7 +330,7 @@ nonisolated struct SmsExtractorValidator {
             let direction = SmsExtractorDirection(rawValue: declared)
         else { throw SmsExtractorValidationError.directionInvalid }
         let span = try evidence(value["evidence"], source: source)
-        guard SmsExtractorNormalizer.isDirectionGrounded(direction.rawValue, in: span.text) else {
+        guard SmsExtractorNormalizer.directionGrounded(direction: direction.rawValue, text: span.text) else {
             throw SmsExtractorValidationError.directionInvalid
         }
         return (direction, span)
@@ -212,16 +382,6 @@ nonisolated struct SmsExtractorValidator {
             value <= Double(Int.max)
         else { return nil }
         return Int(value)
-    }
-
-    private func onlyMoney(in text: String) throws -> String {
-        let range = try NSRegularExpression(
-            pattern: #"(?<![\w,])(?:\d{1,3}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\w,])"#
-        ).matches(in: text, range: NSRange(text.startIndex..., in: text))
-        guard range.count == 1,
-            let value = Range(range[0].range, in: text).map({ String(text[$0]) })
-        else { throw SmsExtractorValidationError.amountInvalid }
-        return value
     }
 }
 

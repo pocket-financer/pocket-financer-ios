@@ -51,7 +51,7 @@ struct ModelSelfTestReportView: View {
 
                 Section("Direct request") {
                     ReportTextField(
-                        label: "Selector instructions",
+                        label: "Extractor instructions",
                         value: report.exactInstructions,
                         monospaced: true
                     )
@@ -93,7 +93,7 @@ struct ModelSelfTestReportView: View {
                     Label("Not logged or transmitted", systemImage: "network.slash")
                 }
             }
-            .navigationTitle("Synthetic Selector Test")
+            .navigationTitle("Synthetic Model Test")
             .navigationBarTitleDisplayMode(.inline)
             .accessibilityIdentifier("model-self-test-report")
             .toolbar {

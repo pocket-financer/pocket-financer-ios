@@ -17,7 +17,7 @@ enum AlertProcessingDiagnostics {
         case .needsReview:
             "Needs review"
         case .rejected:
-            "Rejected deterministically"
+            "Not a transaction"
         case .duplicate:
             "Duplicate"
         }
@@ -147,12 +147,67 @@ enum AlertProcessingDiagnostics {
                     "The model abstained rather than guessing, so the original evidence "
                     + "remains available for review."
             )
-        case "explicitlyUnsuccessfulTransaction":
+        case "explicitlyUnsuccessfulTransaction", "non_posted_failure":
             .init(
                 title: "Transaction was explicitly unsuccessful",
                 detail:
                     "Failed, declined, unsuccessful, or negated wording prevented "
                     + "the model output from creating a transaction."
+            )
+        case "negated_movement":
+            .init(
+                title: "No money moved",
+                detail: "The message states that money was not debited, credited, or processed."
+            )
+        case "pending_event":
+            .init(
+                title: "Pending or scheduled movement",
+                detail: "The message describes a pending or future transaction rather than a completed one."
+            )
+        case "amount_due":
+            .init(
+                title: "Bill or amount due",
+                detail: "The message describes an upcoming payment due rather than a completed transaction."
+            )
+        case "request_or_authorization":
+            .init(
+                title: "Approval or payment request",
+                detail: "The message requests approval or authorization rather than confirming a completed payment."
+            )
+        case "expected_refund_not_posted":
+            .init(
+                title: "Expected refund not yet posted",
+                detail: "The message mentions an upcoming or anticipated refund rather than a posted credit."
+            )
+        case "authorization_or_hold_not_posted":
+            .init(
+                title: "Authorization or temporary hold",
+                detail: "The amount is authorized or temporarily held rather than posted."
+            )
+        case "balance_information":
+            .init(
+                title: "Balance update noted",
+                detail: "The message includes account or card balance wording."
+            )
+        case "credential_otp":
+            .init(
+                title: "Verification code wording detected",
+                detail: "The message contains one-time password or verification-code wording."
+            )
+        case "administrative":
+            .init(
+                title: "Account notice wording detected",
+                detail: "The message contains statement, KYC, or administrative account wording."
+            )
+        case "amount_candidate_present":
+            .init(
+                title: "Amount found in message",
+                detail: "Local structural analysis found a source-grounded amount candidate."
+            )
+        case "completed_direction_candidate_present":
+            .init(
+                title: "Transaction wording found",
+                detail: "Local structural analysis found completed debit or credit wording."
             )
         case "invalidDirection", "extractor_direction_invalid":
             .init(
@@ -226,6 +281,32 @@ enum AlertProcessingDiagnostics {
                 title: "Source evidence mismatch",
                 detail: "An extracted span did not match exact Unicode-scalar substrings in the source message."
             )
+        case "extractor_malformed_json", "extractor_duplicate_json_key", "extractor_extra_content",
+            "extractor_output_not_object":
+            .init(
+                title: "Unreadable model output",
+                detail:
+                    "The local model did not return a single valid structured object, "
+                    + "so nothing was saved automatically."
+            )
+        case "extractor_decision_type_invalid", "extractor_unknown_decision", "extractor_non_posted_extra_fields":
+            .init(
+                title: "Unrecognized model classification",
+                detail: "The local model returned an invalid classification, so the alert was retained for review."
+            )
+        case "extractor_missing_amount", "extractor_missing_direction", "extractor_missing_account",
+            "extractor_posted_field_set_invalid":
+            .init(
+                title: "Incomplete transaction extraction",
+                detail:
+                    "The local model omitted one or more required transaction fields, "
+                    + "so you can select them in Review."
+            )
+        case "extractor_posted_valid":
+            .init(
+                title: "Posted transaction recognized",
+                detail: "The local model extracted a completed transaction with grounded source evidence."
+            )
         case "extractor_none", "tombstoned_none":
             .init(
                 title: "No completed transaction",
@@ -239,6 +320,18 @@ enum AlertProcessingDiagnostics {
                 detail:
                     "The deterministic prefilter excluded this alert as non-transactional "
                     + "and erased sensitive text."
+            )
+        case "tombstoned_rejected":
+            .init(
+                title: "Dismissed in Review",
+                detail:
+                    "You marked this alert as not a transaction, and its message text was erased "
+                    + "into a body-free tombstone."
+            )
+        case "prefilter_eligible":
+            .init(
+                title: "Passed local prefilter",
+                detail: "The alert passed deterministic filtering and continued to local analysis."
             )
         case "prefilter_empty", "prefilter_no_digits", "prefilter_gaming_promo",
             "prefilter_collect_or_mandate_request", "prefilter_otp_verification",
@@ -259,29 +352,92 @@ enum AlertProcessingDiagnostics {
         case "account_resolution_ambiguous":
             .init(
                 title: "Multiple accounts matched",
-                detail: "More than one local account matched this reference, so manual confirmation is required."
+                detail:
+                    "More than one local account matched this reference. Choose the right account in Review."
             )
-        case "duplicate_possible", "duplicate_already_persisted":
+        case "duplicate_possible":
             .init(
                 title: "Possible duplicate detected",
                 detail:
-                    "A matching transaction was already persisted within the 5-minute "
-                    + "duplicate window or for this alert."
+                    "A similar transaction for the same account, direction, and amount was already saved "
+                    + "within 5 minutes. Confirm or dismiss it in Review."
+            )
+        case "duplicate_already_persisted":
+            .init(
+                title: "Already saved",
+                detail: "A transaction was already saved for this alert."
             )
         case "persistence_all_gates_passed":
             .init(
                 title: "Saved automatically",
                 detail: "All grounding, account-resolution, and duplicate checks passed for automatic local save."
             )
+        case "persistence_configuration_hash_mismatch", "persistence_operation_integrity_invalid":
+            .init(
+                title: "Processing integrity check failed",
+                detail: "Stored configuration or evidence digests did not match, so automatic saving stopped safely."
+            )
+        case "persistence_not_posted":
+            .init(
+                title: "Not a completed transaction",
+                detail: "The alert did not represent a completed transaction eligible for automatic saving."
+            )
+        case "persistence_grounded_fields_missing":
+            .init(
+                title: "Required fields need confirmation",
+                detail: "Choose the amount, direction, and account in Review before saving."
+            )
+        case "persistence_invalid_money":
+            .init(
+                title: "Transaction amount could not be saved",
+                detail: "The extracted amount was not a positive exact value in a supported currency."
+            )
+        case "persistence_account_not_uniquely_resolved":
+            .init(
+                title: "Account confirmation required",
+                detail: "The alert could not be matched to a single confirmed local account."
+            )
+        case "persistence_triage_requires_review", "persistence_blocked", "persistence_blocked_by_rollout_mode",
+            "review_retained":
+            .init(
+                title: "Retained for review",
+                detail: "Automatic checks required confirmation in Review before saving a transaction."
+            )
+        case "configuration_primary_currency_required":
+            .init(
+                title: "Confirm primary currency",
+                detail:
+                    "Confirm your primary currency on Home or in Settings so saved alerts can finish processing locally."
+            )
         case "configuration_integrity":
             .init(
                 title: "Asset integrity verification failed",
                 detail: "Bundled SMS pipeline contracts did not match their manifest digests, so processing stopped."
             )
+        case "original_configuration_adapter_unavailable":
+            .init(
+                title: "Original settings unavailable",
+                detail: "Retry with current settings to process this alert locally."
+            )
+        case "saved_operation_requires_explicit_retry":
+            .init(
+                title: "Manual retry required",
+                detail: "This retained alert is waiting for an explicit retry or confirmation in Review."
+            )
         case "runtime_unavailable", "runtime_ineligible":
             .init(
                 title: "Local model runtime unavailable",
                 detail: "On-device Apple Foundation Models were not available; the alert remains retained locally."
+            )
+        case "runtime_failure":
+            .init(
+                title: "Local model could not finish",
+                detail: "The on-device model failed before producing a complete result; retry or review manually."
+            )
+        case "runtime_timeout":
+            .init(
+                title: "Processing timed out",
+                detail: "Local processing did not finish within the time limit and remains retained locally."
             )
         case "runtime_output_truncated":
             .init(
@@ -293,28 +449,39 @@ enum AlertProcessingDiagnostics {
                 title: "Processing interrupted",
                 detail: "Processing was interrupted before settlement; evidence remains retained for retry."
             )
+        case "retry_exhausted", "automatic_retry_limit_reached":
+            .init(
+                title: "Automatic retry limit reached",
+                detail:
+                    "Automatic processing stopped after three attempts. The retained alert can still be retried explicitly."
+            )
         case "missing_amount":
             .init(title: "No currency amount", detail: "The body did not contain an amount marked with Rs, INR, or ₹.")
         case "missing_account":
             .init(
                 title: "No account reference",
-                detail: "The body did not contain a supported masked account or card reference.")
+                detail: "The body did not contain a supported masked account or card reference."
+            )
         case "missing_transaction_verb":
             .init(
                 title: "No completed transaction wording",
-                detail: "The body did not contain a supported completed-transaction verb.")
+                detail: "The body did not contain a supported completed-transaction verb."
+            )
         case "one_time_password":
             .init(
                 title: "OTP or verification alert",
-                detail: "The deterministic filter found one-time password or verification-code wording.")
+                detail: "The deterministic filter found one-time password or verification-code wording."
+            )
         case "collect_request":
             .init(
                 title: "Payment request",
-                detail: "The deterministic filter found collect-request or mandate-request wording.")
+                detail: "The deterministic filter found collect-request or mandate-request wording."
+            )
         case "promotion":
             .init(
                 title: "Promotional message",
-                detail: "The deterministic filter found high-confidence offer or solicitation wording.")
+                detail: "The deterministic filter found high-confidence offer or solicitation wording."
+            )
         case "unsuccessful_transaction":
             .init(
                 title: "Unsuccessful transaction",
@@ -326,12 +493,7 @@ enum AlertProcessingDiagnostics {
         case "persistence_failed":
             .init(
                 title: "Local save failed",
-                detail: "Pocket Financer could not finish a local database update for this attempt.")
-        case "automatic_retry_limit_reached":
-            .init(
-                title: "Automatic retry limit reached",
-                detail:
-                    "Automatic processing stopped after three attempts. The retained alert can still be retried explicitly."
+                detail: "Pocket Financer could not finish a local database update for this attempt."
             )
         case "parser_failed":
             .init(title: "Parser failed", detail: "The parser stopped with an unclassified, privacy-safe failure.")
@@ -339,11 +501,13 @@ enum AlertProcessingDiagnostics {
             .init(
                 title: "Evidence validation passed",
                 detail:
-                    "The mapped parser draft was grounded against the retained alert before ledger fields were saved.")
+                    "The mapped parser draft was grounded against the retained alert before ledger fields were saved."
+            )
         default:
             .init(
                 title: "Recorded processing code",
-                detail: "Pocket Financer retained this privacy-safe code for inspection.")
+                detail: "Pocket Financer retained this privacy-safe code for inspection."
+            )
         }
     }
 }

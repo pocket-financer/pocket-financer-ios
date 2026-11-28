@@ -184,7 +184,7 @@ final class AppStartupAndStorageTests: XCTestCase {
 
     @MainActor
     func testLocalDataServiceDiagnosticsAndEraseAllCoverEveryPersistedModel() throws {
-        let database = try AppDatabase(inMemory: true)
+        let database = try TestFixtures.makeInMemoryDatabase()
         let context = database.container.mainContext
 
         let statuses: [AlertStatus] = [

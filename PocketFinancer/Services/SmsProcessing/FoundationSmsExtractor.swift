@@ -96,6 +96,28 @@ nonisolated enum SmsFlatExtractionProjector {
         + #""generation_mode":"DIRECT_NON_THINKING","raw_output_utf8_byte_limit":16384,"#
         + #""runtime":"Apple Foundation Models","wire_transport":"apple_fm_guided_flat"}"#
 
+    static func makeSelectorResponse(
+        isComplete: Bool,
+        requestJSON: String,
+        flat: () -> FlatSmsExtraction
+    ) throws -> DirectSelectorResponse {
+        guard isComplete else {
+            return DirectSelectorResponse(
+                rawOutput: "",
+                runtimeProfileJSON: runtimeProfileJSON,
+                requestJSON: requestJSON,
+                completion: "incomplete"
+            )
+        }
+        let rawOutput = try projectFlatExtraction(flat())
+        return DirectSelectorResponse(
+            rawOutput: rawOutput,
+            runtimeProfileJSON: runtimeProfileJSON,
+            requestJSON: requestJSON,
+            completion: "complete"
+        )
+    }
+
     static func projectFlatExtraction(_ flat: FlatSmsExtraction) throws -> String {
         switch flat.decision {
         case "none", "abstain":
@@ -299,13 +321,12 @@ nonisolated enum SmsFlatExtractionProjector {
                             maximumResponseTokens: 512
                         )
                     )
-                    let rawOutput = try Self.projectFlatExtraction(response.content.toFlatExtraction())
-                    return DirectSelectorResponse(
-                        rawOutput: rawOutput,
-                        runtimeProfileJSON: Self.runtimeProfileJSON,
-                        requestJSON: requestJSON,
-                        completion: response.rawContent.isComplete ? "complete" : "incomplete"
-                    )
+                    return try SmsFlatExtractionProjector.makeSelectorResponse(
+                        isComplete: response.rawContent.isComplete,
+                        requestJSON: requestJSON
+                    ) {
+                        response.content.toFlatExtraction()
+                    }
                 }
             } catch let error as TransactionParserError {
                 throw error

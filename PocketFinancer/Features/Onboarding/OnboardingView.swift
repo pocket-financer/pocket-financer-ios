@@ -38,7 +38,7 @@ struct OnboardingView: View {
                 .tag(1)
 
                 OnboardingPage(
-                    symbol: "coloncurrencysign.circle.fill",
+                    symbol: CurrencyFormatter.symbolName(for: primaryCurrency, filled: true),
                     title: "Choose your primary currency",
                     subtitle:
                         "This is a fallback only when an alert does not name a currency. Explicit source evidence always wins.",
@@ -65,7 +65,8 @@ struct OnboardingView: View {
                         AutomationStep(number: 1, text: "Open Shortcuts and create a personal Message automation.")
                         AutomationStep(
                             number: 2,
-                            text: "Use a Message Contains text filter such as Rs. Do not add a Sender condition."
+                            text:
+                                "Use a Message Contains text filter for your bank alerts (such as debited or Rs). Do not add a Sender condition."
                         )
                         AutomationStep(
                             number: 3,

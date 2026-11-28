@@ -68,4 +68,26 @@ enum CurrencyFormatter {
         let divisor = (0..<scale).reduce(Decimal(1)) { value, _ in value * 10 }
         return NSDecimalNumber(decimal: Decimal(minorUnits) / divisor).stringValue
     }
+
+    nonisolated static func symbolName(for currencyCode: String, filled: Bool = false) -> String {
+        let normalizedCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let base: String
+        switch normalizedCode {
+        case "AUD", "CAD", "SGD", "USD":
+            base = "dollarsign.circle"
+        case "CHF":
+            base = "francsign.circle"
+        case "EUR":
+            base = "eurosign.circle"
+        case "GBP":
+            base = "sterlingsign.circle"
+        case "INR":
+            base = "indianrupeesign.circle"
+        case "JPY":
+            base = "yensign.circle"
+        default:
+            return filled ? "banknote.fill" : "banknote"
+        }
+        return filled ? "\(base).fill" : base
+    }
 }
